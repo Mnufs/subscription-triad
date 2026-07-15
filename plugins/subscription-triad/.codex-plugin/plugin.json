@@ -1,0 +1,43 @@
+{
+  "name": "subscription-triad",
+  "version": "0.1.0",
+  "description": "Plan with Codex, review with Fable, execute with Grok Build, and stay on subscription CLIs.",
+  "author": {
+    "name": "Mnufs",
+    "url": "https://github.com/Mnufs"
+  },
+  "homepage": "https://github.com/Mnufs/subscription-triad#readme",
+  "repository": "https://github.com/Mnufs/subscription-triad",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "claude-fable",
+    "grok-build",
+    "agmsg",
+    "subscription",
+    "orchestration"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Subscription Triad",
+    "shortDescription": "Plan, review, and build through subscription CLIs",
+    "longDescription": "A fail-closed Codex workflow that binds Fable approval to an exact plan hash, dispatches Grok Build through OAuth, and requires Codex verification.",
+    "developerName": "Mnufs",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/Mnufs/subscription-triad",
+    "brandColor": "#4F46E5",
+    "capabilities": [
+      "Subscription-only provider routing",
+      "Independent plan review",
+      "Plan-hash approval gate",
+      "Persistent Grok execution sessions",
+      "Root verification"
+    ],
+    "defaultPrompt": [
+      "Use $subscription-triad to implement this feature through the full gated workflow.",
+      "Use $subscription-triad to check provider readiness without executing anything.",
+      "Use $subscription-triad to resume the approved Grok execution and verify the result."
+    ]
+  }
+}
