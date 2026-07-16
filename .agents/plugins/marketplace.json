@@ -1,14 +1,14 @@
 {
-  "name": "subscription-triad",
+  "name": "model-combo",
   "interface": {
-    "displayName": "Subscription Triad"
+    "displayName": "Model Combo"
   },
   "plugins": [
     {
-      "name": "subscription-triad",
+      "name": "model-combo",
       "source": {
         "source": "local",
-        "path": "./plugins/subscription-triad"
+        "path": "./plugins/model-combo"
       },
       "policy": {
         "installation": "AVAILABLE",

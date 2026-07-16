@@ -13,24 +13,24 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "plugins" / "subscription-triad" / "skills" / "subscription-triad" / "scripts"
+SCRIPTS = ROOT / "plugins" / "model-combo" / "skills" / "model-combo" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import triad_core  # noqa: E402
-import triad_provider  # noqa: E402
-import triad_session  # noqa: E402
+import combo_core  # noqa: E402
+import combo_provider  # noqa: E402
+import combo_session  # noqa: E402
 
 
 class ProviderBridgeTests(unittest.TestCase):
     def _planned_run(self, root: Path):
         project = root / "project"
         project.mkdir()
-        created = triad_core.create_run(str(project), "Task", "Acceptance", "Context")
-        triad_core.record_plan(created["run_dir"], "Plan")
+        created = combo_core.create_run(str(project), "Task", "Acceptance", "Context")
+        combo_core.record_plan(created["run_dir"], "Plan")
         return project, created["run_dir"]
 
     def test_command_line_exposes_only_run_scoped_session(self):
-        parser = triad_provider.build_parser()
+        parser = combo_provider.build_parser()
         parsed = parser.parse_args(["session", "--run", "/tmp/run"])
         self.assertEqual("session", parsed.command)
         with contextlib.redirect_stderr(io.StringIO()):
@@ -40,19 +40,19 @@ class ProviderBridgeTests(unittest.TestCase):
     def test_private_lease_is_exclusive_and_removed_on_close(self):
         with tempfile.TemporaryDirectory() as temp:
             _project, run_dir = self._planned_run(Path(temp))
-            store = triad_core.RunStore(Path(run_dir))
-            lease = triad_session.ProviderLease(store).acquire()
-            self.assertTrue(triad_session.lease_is_current(lease.path, lease.token))
+            store = combo_core.RunStore(Path(run_dir))
+            lease = combo_session.ProviderLease(store).acquire()
+            self.assertTrue(combo_session.lease_is_current(lease.path, lease.token))
             self.assertFalse(
-                triad_session.lease_is_current(
+                combo_session.lease_is_current(
                     lease.path,
                     lease.token,
-                    now=lease.path.stat().st_mtime + triad_session.LEASE_TTL_SECONDS + 1,
+                    now=lease.path.stat().st_mtime + combo_session.LEASE_TTL_SECONDS + 1,
                 )
             )
             self.assertEqual(0o600, stat.S_IMODE(lease.path.stat().st_mode))
-            with self.assertRaisesRegex(triad_core.TriadError, "already active"):
-                triad_session.ProviderLease(store).acquire()
+            with self.assertRaisesRegex(combo_core.ComboError, "already active"):
+                combo_session.ProviderLease(store).acquire()
             lease.close()
             self.assertFalse(lease.path.exists())
 
@@ -62,26 +62,26 @@ class ProviderBridgeTests(unittest.TestCase):
             _project, run_dir = self._planned_run(root)
             other = root / "other"
             other.mkdir()
-            store = triad_core.RunStore(Path(run_dir))
+            store = combo_core.RunStore(Path(run_dir))
 
             def relocate(state):
                 state["project_root"] = str(other)
 
             store.mutate(relocate)
-            with self.assertRaisesRegex(triad_core.TriadError, "escapes the project root|outside its target project"):
-                triad_session.validate_run_binding(run_dir)
+            with self.assertRaisesRegex(combo_core.ComboError, "escapes the project root|outside its target project"):
+                combo_session.validate_run_binding(run_dir)
 
     def test_orphaned_worker_state_is_recoverable(self):
         with tempfile.TemporaryDirectory() as temp:
             _project, run_dir = self._planned_run(Path(temp))
-            store = triad_core.RunStore(Path(run_dir))
+            store = combo_core.RunStore(Path(run_dir))
 
             def orphan(state):
                 state["state"] = "executing"
                 state["worker_pid"] = 999_999_999
 
             state = store.mutate(orphan)
-            recovered = triad_session.recover_orphaned_worker(store, state)
+            recovered = combo_session.recover_orphaned_worker(store, state)
             self.assertEqual("execution_failed", recovered["state"])
             self.assertIsNone(recovered["worker_pid"])
             self.assertIn("previous provider session ended", recovered["executor_error"])
@@ -97,13 +97,13 @@ class ProviderBridgeTests(unittest.TestCase):
             ]
             source = io.StringIO("".join(json.dumps(item) + "\n" for item in requests))
             output = io.StringIO()
-            with mock.patch.object(triad_core, "doctor", return_value={"ready": True}) as doctor:
+            with mock.patch.object(combo_core, "doctor", return_value={"ready": True}) as doctor:
                 with mock.patch.object(
-                    triad_core,
+                    combo_core,
                     "review_plan",
                     return_value={"decision": "PLAN_APPROVED"},
                 ) as review:
-                    code = triad_provider.serve_session(
+                    code = combo_provider.serve_session(
                         run_dir,
                         input_stream=source,
                         output_stream=output,
@@ -119,13 +119,13 @@ class ProviderBridgeTests(unittest.TestCase):
                 ["doctor-1", "doctor-2", "review-1", "close-1"],
                 [message["request_id"] for message in messages[1:]],
             )
-            self.assertFalse((Path(run_dir) / triad_session.LEASE_FILE_NAME).exists())
+            self.assertFalse((Path(run_dir) / combo_session.LEASE_FILE_NAME).exists())
 
     def test_real_json_lines_process_stays_open_until_close(self):
         with tempfile.TemporaryDirectory() as temp:
             _project, run_dir = self._planned_run(Path(temp))
             process = subprocess.Popen(
-                [sys.executable, str(SCRIPTS / "triad_provider.py"), "session", "--run", run_dir],
+                [sys.executable, str(SCRIPTS / "combo_provider.py"), "session", "--run", run_dir],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -140,12 +140,12 @@ class ProviderBridgeTests(unittest.TestCase):
             self.assertEqual("session_ready", messages[0]["event"])
             self.assertEqual("close-process", messages[1]["request_id"])
             self.assertTrue(messages[1]["result"]["closed"])
-            self.assertFalse((Path(run_dir) / triad_session.LEASE_FILE_NAME).exists())
+            self.assertFalse((Path(run_dir) / combo_session.LEASE_FILE_NAME).exists())
 
     def test_provider_actions_require_successful_doctor(self):
         with tempfile.TemporaryDirectory() as temp:
             project, run_dir = self._planned_run(Path(temp))
-            controller = triad_provider.ProviderSession(triad_core.RunStore(Path(run_dir)), project)
+            controller = combo_provider.ProviderSession(combo_core.RunStore(Path(run_dir)), project)
             response, should_close = controller.handle(
                 {"action": "review", "request_id": "review-early", "effort": "high"}
             )
@@ -157,16 +157,16 @@ class ProviderBridgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp) / "project"
             project.mkdir()
-            created = triad_core.create_run(str(project), "Task", "Acceptance", "Context")
+            created = combo_core.create_run(str(project), "Task", "Acceptance", "Context")
             run_dir = created["run_dir"]
-            store = triad_core.RunStore(Path(run_dir))
+            store = combo_core.RunStore(Path(run_dir))
 
             def executed(state):
                 state["state"] = "executed"
 
             store.mutate(executed)
-            request = triad_core.prepare_continuation_request(run_dir, "Bound correction")
-            value = triad_provider.read_bound_instructions(run_dir, request["path"], request["sha256"])
+            request = combo_core.prepare_continuation_request(run_dir, "Bound correction")
+            value = combo_provider.read_bound_instructions(run_dir, request["path"], request["sha256"])
             self.assertEqual("Bound correction\n", value)
             self.assertFalse(Path(request["path"]).exists())
 
@@ -174,18 +174,18 @@ class ProviderBridgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp) / "project"
             project.mkdir()
-            created = triad_core.create_run(str(project), "Task", "Acceptance", "Context")
+            created = combo_core.create_run(str(project), "Task", "Acceptance", "Context")
             run_dir = created["run_dir"]
-            store = triad_core.RunStore(Path(run_dir))
+            store = combo_core.RunStore(Path(run_dir))
 
             def executed(state):
                 state["state"] = "executed"
 
             store.mutate(executed)
-            request = triad_core.prepare_continuation_request(run_dir, "Original correction")
+            request = combo_core.prepare_continuation_request(run_dir, "Original correction")
             Path(request["path"]).write_text("Changed correction\n", encoding="utf-8")
-            with self.assertRaisesRegex(triad_core.TriadError, "changed after its session input"):
-                triad_provider.read_bound_instructions(run_dir, request["path"], request["sha256"])
+            with self.assertRaisesRegex(combo_core.ComboError, "changed after its session input"):
+                combo_provider.read_bound_instructions(run_dir, request["path"], request["sha256"])
 
 
 if __name__ == "__main__":

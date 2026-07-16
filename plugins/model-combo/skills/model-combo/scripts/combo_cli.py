@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual CLI for Subscription Triad."""
+"""Manual CLI for Model Combo."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sys
 
-import triad_core
+import combo_core
 
 
 def read_file(path: str) -> str:
@@ -16,7 +16,10 @@ def read_file(path: str) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="triad", description="Subscription-only Codex/Fable/Grok orchestration")
+    parser = argparse.ArgumentParser(
+        prog="model-combo",
+        description="Subscription-native Codex/Fable/Grok orchestration",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     doctor = sub.add_parser("doctor")
@@ -55,30 +58,30 @@ def build_parser() -> argparse.ArgumentParser:
 
 def execute(args: argparse.Namespace):
     if args.command == "doctor":
-        return triad_core.doctor(args.project)
+        return combo_core.doctor(args.project)
     if args.command == "create":
         context = read_file(args.context_file) if args.context_file else "No additional context supplied."
-        return triad_core.create_run(args.project, read_file(args.task_file), read_file(args.acceptance_file), context)
+        return combo_core.create_run(args.project, read_file(args.task_file), read_file(args.acceptance_file), context)
     if args.command == "plan":
-        return triad_core.record_plan(args.run, read_file(args.plan_file))
+        return combo_core.record_plan(args.run, read_file(args.plan_file))
     if args.command == "review":
-        return triad_core.review_plan(args.run, effort=args.effort)
+        return combo_core.review_plan(args.run, effort=args.effort)
     if args.command == "dispatch":
-        return triad_core.dispatch_grok(args.run)
+        return combo_core.dispatch_grok(args.run)
     if args.command == "status":
-        return triad_core.run_status(args.run)
+        return combo_core.run_status(args.run)
     if args.command == "continue":
-        return triad_core.continue_grok(args.run, read_file(args.instructions_file))
+        return combo_core.continue_grok(args.run, read_file(args.instructions_file))
     if args.command == "verify":
-        return triad_core.record_verification(args.run, args.verdict, read_file(args.report_file))
-    raise triad_core.TriadError("Unknown command.")
+        return combo_core.record_verification(args.run, args.verdict, read_file(args.report_file))
+    raise combo_core.ComboError("Unknown command.")
 
 
 def main() -> int:
     args = build_parser().parse_args()
     try:
         result = execute(args)
-    except (triad_core.TriadError, OSError, UnicodeDecodeError) as exc:
+    except (combo_core.ComboError, OSError, UnicodeDecodeError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, sort_keys=True))
         return 1
     print(json.dumps({"ok": True, "result": result}, ensure_ascii=False, indent=2, sort_keys=True))

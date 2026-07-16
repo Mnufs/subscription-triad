@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Core state machine for Subscription Triad.
+"""Core state machine for Model Combo.
 
 The module intentionally uses only the Python standard library. Provider calls
 go through the vendors' official CLIs with subscription authentication; API key
@@ -69,7 +69,7 @@ Use PLAN_APPROVED only when no material gap remains. Use PLAN_REVISE when correc
 RUN_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
 
-class TriadError(RuntimeError):
+class ComboError(RuntimeError):
     """Fail-closed error for an invalid transition or provider operation."""
 
 
@@ -83,9 +83,9 @@ def sha256_text(value: str) -> str:
 
 def require_text(name: str, value: Any, *, limit: int = MAX_TEXT_CHARS) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise TriadError("%s must be a non-empty string." % name)
+        raise ComboError("%s must be a non-empty string." % name)
     if len(value) > limit:
-        raise TriadError("%s exceeds the %d-character limit." % (name, limit))
+        raise ComboError("%s exceeds the %d-character limit." % (name, limit))
     return value.strip() + "\n"
 
 
@@ -113,7 +113,7 @@ def _resolve_binary(name: str, candidates: Iterable[Path]) -> Path:
         path = candidate.expanduser()
         if path.is_file() and os.access(str(path), os.X_OK):
             return path.resolve()
-    raise TriadError("%s CLI is not installed or is not on PATH." % name)
+    raise ComboError("%s CLI is not installed or is not on PATH." % name)
 
 
 def resolve_claude() -> Path:
@@ -159,9 +159,9 @@ def _run(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise TriadError("Command timed out: %s" % Path(command[0]).name) from exc
+        raise ComboError("Command timed out: %s" % Path(command[0]).name) from exc
     except OSError as exc:
-        raise TriadError("Could not start command: %s" % Path(command[0]).name) from exc
+        raise ComboError("Could not start command: %s" % Path(command[0]).name) from exc
 
 
 def check_claude_subscription() -> Dict[str, Any]:
@@ -172,11 +172,11 @@ def check_claude_subscription() -> Dict[str, Any]:
         env=sanitized_provider_environment(),
     )
     if result.returncode != 0:
-        raise TriadError("Claude authentication check failed; run `claude auth login`.")
+        raise ComboError("Claude authentication check failed; run `claude auth login`.")
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise TriadError("Claude authentication status was not valid JSON.") from exc
+        raise ComboError("Claude authentication status was not valid JSON.") from exc
     subscription = payload.get("subscriptionType") if isinstance(payload, dict) else None
     if not (
         isinstance(payload, dict)
@@ -185,7 +185,7 @@ def check_claude_subscription() -> Dict[str, Any]:
         and payload.get("apiProvider") == "firstParty"
         and subscription in {"pro", "max"}
     ):
-        raise TriadError(
+        raise ComboError(
             "Claude must use a first-party Pro or Max subscription login; run `claude auth login`."
         )
     return {
@@ -222,15 +222,15 @@ def check_grok_subscription(project_root: Optional[Path] = None) -> Dict[str, An
             cwd=project_root,
             env=env,
         )
-    except TriadError as exc:
-        raise TriadError("Grok Build configuration inspection failed: %s" % exc) from exc
+    except ComboError as exc:
+        raise ComboError("Grok Build configuration inspection failed: %s" % exc) from exc
     try:
         inspection_payload = json.loads(inspection.stdout)
     except json.JSONDecodeError as exc:
-        raise TriadError("Grok Build login policy could not be inspected.") from exc
+        raise ComboError("Grok Build login policy could not be inspected.") from exc
     login_policy = inspection_payload.get("loginPolicy") if isinstance(inspection_payload, dict) else None
     if not isinstance(login_policy, dict) or login_policy.get("apiKeyAuthDisabled") is not True:
-        raise TriadError("Grok Build did not confirm that API-key authentication is disabled.")
+        raise ComboError("Grok Build did not confirm that API-key authentication is disabled.")
     try:
         result = _run(
             [str(grok), "--oauth", "models"],
@@ -238,22 +238,22 @@ def check_grok_subscription(project_root: Optional[Path] = None) -> Dict[str, An
             cwd=Path(__file__).resolve().parent,
             env=env,
         )
-    except TriadError as exc:
-        raise TriadError("Grok Build model availability check failed: %s" % exc) from exc
+    except ComboError as exc:
+        raise ComboError("Grok Build model availability check failed: %s" % exc) from exc
     combined = (result.stdout + "\n" + result.stderr).lower()
     if any(marker in combined for marker in _GROK_AUTH_FAILURES):
-        raise TriadError("Grok Build OAuth is unavailable; run `grok login --oauth`.")
+        raise ComboError("Grok Build OAuth is unavailable; run `grok login --oauth`.")
     if any(marker in combined for marker in _GROK_NETWORK_FAILURES):
-        raise TriadError(
+        raise ComboError(
             "Grok Build could not refresh models from the approved provider session. Check the host "
             "proxy or connectivity for `cli-chat-proxy.grok.com` and `auth.x.ai`; do not enable "
             "persistent Codex network settings."
         )
     if result.returncode != 0:
-        raise TriadError("Grok Build OAuth model check failed.")
+        raise ComboError("Grok Build OAuth model check failed.")
     selected_model = next((model for model in GROK_MODEL_PREFERENCES if model in combined), None)
     if selected_model is None:
-        raise TriadError(
+        raise ComboError(
             "Grok Build did not advertise a supported model (%s)."
             % ", ".join(GROK_MODEL_PREFERENCES)
         )
@@ -303,11 +303,11 @@ def doctor(project_root: Optional[str] = None) -> Dict[str, Any]:
     }
     try:
         report["claude"] = check_claude_subscription()
-    except TriadError as exc:
+    except ComboError as exc:
         report["claude"] = {"available": False, "error": str(exc)}
     try:
         report["grok"] = check_grok_subscription(project)
-    except TriadError as exc:
+    except ComboError as exc:
         report["grok"] = {"available": False, "error": str(exc)}
     agmsg = find_agmsg_root()
     report["agmsg"] = (
@@ -353,7 +353,7 @@ def _directory_lock(run_dir: Path, timeout: float = 10.0) -> Iterator[None]:
             break
         except FileExistsError:
             if time.monotonic() >= deadline:
-                raise TriadError("Timed out waiting for the run state lock.")
+                raise ComboError("Timed out waiting for the run state lock.")
             time.sleep(0.05)
     try:
         yield
@@ -366,14 +366,14 @@ def _read_regular_json(path: Path) -> Dict[str, Any]:
     try:
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise TriadError("Run state must be a single regular file.")
+            raise ComboError("Run state must be a single regular file.")
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise TriadError("Run state does not exist: %s" % path) from exc
+        raise ComboError("Run state does not exist: %s" % path) from exc
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise TriadError("Run state is unreadable or malformed.") from exc
+        raise ComboError("Run state is unreadable or malformed.") from exc
     if not isinstance(payload, dict) or payload.get("schema_version") != SCHEMA_VERSION:
-        raise TriadError("Run state schema is unsupported.")
+        raise ComboError("Run state schema is unsupported.")
     return payload
 
 
@@ -381,7 +381,7 @@ def _ensure_within(child: Path, parent: Path) -> None:
     try:
         child.relative_to(parent)
     except ValueError as exc:
-        raise TriadError("Resolved run path escapes the project root.") from exc
+        raise ComboError("Resolved run path escapes the project root.") from exc
 
 
 class RunStore:
@@ -392,11 +392,11 @@ class RunStore:
         project_root = Path(state.get("project_root", "")).expanduser().resolve()
         run_id = state.get("run_id")
         if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id):
-            raise TriadError("Run id is invalid.")
+            raise ComboError("Run id is invalid.")
         _ensure_within(self.run_dir, project_root)
-        expected = (project_root / ".subscription-triad" / "runs" / run_id).resolve()
+        expected = (project_root / ".model-combo" / "runs" / run_id).resolve()
         if expected != self.run_dir:
-            raise TriadError("Run directory does not match its recorded project and id.")
+            raise ComboError("Run directory does not match its recorded project and id.")
 
     def read(self) -> Dict[str, Any]:
         return _read_regular_json(self.state_path)
@@ -430,14 +430,14 @@ def create_run(
 ) -> Dict[str, Any]:
     project = Path(project_root).expanduser().resolve()
     if not project.is_dir():
-        raise TriadError("Project root must be an existing directory.")
+        raise ComboError("Project root must be an existing directory.")
     task_text = require_text("task", task)
     acceptance_text = require_text("acceptance_criteria", acceptance_criteria)
     context_text = require_text("context", context)
     selected_id = run_id or str(uuid.uuid4())
     if not RUN_ID_RE.match(selected_id):
-        raise TriadError("run_id must be a canonical UUID.")
-    runs_root = project / ".subscription-triad" / "runs"
+        raise ComboError("run_id must be a canonical UUID.")
+    runs_root = project / ".model-combo" / "runs"
     runs_root.mkdir(parents=True, exist_ok=True)
     resolved_runs_root = runs_root.resolve()
     _ensure_within(resolved_runs_root, project)
@@ -445,7 +445,7 @@ def create_run(
     try:
         run_dir.mkdir(mode=0o700)
     except FileExistsError as exc:
-        raise TriadError("Run already exists: %s" % selected_id) from exc
+        raise ComboError("Run already exists: %s" % selected_id) from exc
 
     created = utc_now()
     project_hash = hashlib.sha256(str(project).encode("utf-8")).hexdigest()[:12]
@@ -460,7 +460,7 @@ def create_run(
         "review_count": 0,
         "max_reviews": MAX_REVIEWS,
         "last_review_decision": None,
-        "team": "subscription-triad-%s" % project_hash,
+        "team": "model-combo-%s" % project_hash,
         "orchestrator_role": "codex-orchestrator",
         "executor_role": "grok-%s" % selected_id.split("-")[0],
         "grok_session_id": str(uuid.uuid4()),
@@ -484,7 +484,7 @@ def record_plan(run_dir: str, plan: str) -> Dict[str, Any]:
 
     def change(state: Dict[str, Any]) -> None:
         if state.get("state") in {"dispatched", "executing", "executed", "verification_failed", "complete", "execution_failed"}:
-            raise TriadError("The plan cannot change after Grok execution starts; create a new run for new scope.")
+            raise ComboError("The plan cannot change after Grok execution starts; create a new run for new scope.")
         if state.get("plan_sha256") == plan_hash:
             return
         version = int(state.get("plan_version", 0)) + 1
@@ -519,13 +519,13 @@ def build_review_packet(store: RunStore, state: Dict[str, Any]) -> str:
     ]
     packet = "\n\n".join(parts)
     if len(packet) > MAX_TEXT_CHARS:
-        raise TriadError("Combined Fable review packet is too large.")
+        raise ComboError("Combined Fable review packet is too large.")
     return packet
 
 
 def invoke_fable_review(packet: str, effort: str = DEFAULT_EFFORT) -> Dict[str, Any]:
     if effort not in {"low", "medium", "high", "xhigh", "max"}:
-        raise TriadError("Unsupported Fable effort: %s" % effort)
+        raise ComboError("Unsupported Fable effort: %s" % effort)
     auth = check_claude_subscription()
     claude = Path(auth["binary"])
     command = [
@@ -555,24 +555,24 @@ def invoke_fable_review(packet: str, effort: str = DEFAULT_EFFORT) -> Dict[str, 
         env=sanitized_provider_environment(),
     )
     if result.returncode != 0:
-        raise TriadError("Claude Fable review failed with exit code %d; output withheld." % result.returncode)
+        raise ComboError("Claude Fable review failed with exit code %d; output withheld." % result.returncode)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise TriadError("Claude Fable returned malformed JSON.") from exc
+        raise ComboError("Claude Fable returned malformed JSON.") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("result"), str):
-        raise TriadError("Claude Fable returned an unexpected result.")
+        raise ComboError("Claude Fable returned an unexpected result.")
     usage = payload.get("modelUsage")
     used_models = sorted(usage) if isinstance(usage, dict) and all(isinstance(key, str) for key in usage) else []
     if FABLE_MODEL not in used_models:
-        raise TriadError("Runtime metadata did not confirm the pinned Claude Fable 5 model.")
+        raise ComboError("Runtime metadata did not confirm the pinned Claude Fable 5 model.")
     unknown = set(used_models) - {FABLE_MODEL} - set(FABLE_HELPER_MODELS)
     if unknown:
-        raise TriadError("Runtime metadata reported an unapproved helper model.")
+        raise ComboError("Runtime metadata reported an unapproved helper model.")
     review = payload["result"].strip()
     decision = _first_non_empty_line(review)
     if decision not in {"PLAN_APPROVED", "PLAN_REVISE"}:
-        raise TriadError("Claude Fable omitted the required plan decision.")
+        raise ComboError("Claude Fable omitted the required plan decision.")
     return {
         "decision": decision,
         "review": review + "\n",
@@ -592,9 +592,9 @@ def review_plan(
     store = RunStore(Path(run_dir))
     before = store.read()
     if before.get("state") != "planned":
-        raise TriadError("A current, unreviewed plan is required before Fable review.")
+        raise ComboError("A current, unreviewed plan is required before Fable review.")
     if int(before.get("review_count", 0)) >= int(before.get("max_reviews", MAX_REVIEWS)):
-        raise TriadError("The five-review safety limit has been reached; execution remains blocked.")
+        raise ComboError("The five-review safety limit has been reached; execution remains blocked.")
     plan_hash = before.get("plan_sha256")
     review_number = int(before.get("review_count", 0)) + 1
     packet = build_review_packet(store, before)
@@ -602,13 +602,13 @@ def review_plan(
     decision = result.get("decision")
     review_text = require_text("review", result.get("review"))
     if decision not in {"PLAN_APPROVED", "PLAN_REVISE"}:
-        raise TriadError("Reviewer returned an invalid decision.")
+        raise ComboError("Reviewer returned an invalid decision.")
 
     def change(state: Dict[str, Any]) -> None:
         if state.get("state") != "planned" or state.get("plan_sha256") != plan_hash:
-            raise TriadError("The plan changed while Fable was reviewing it; review the new version.")
+            raise ComboError("The plan changed while Fable was reviewing it; review the new version.")
         if int(state.get("review_count", 0)) + 1 != review_number:
-            raise TriadError("Another review completed concurrently; reload the run state.")
+            raise ComboError("Another review completed concurrently; reload the run state.")
         _atomic_write_text(store.run_dir / ("review-v%d.md" % review_number), review_text)
         _atomic_write_text(store.run_dir / "review.md", review_text)
         state["review_count"] = review_number
@@ -635,7 +635,7 @@ def _run_agmsg(script_root: Path, name: str, args: Sequence[str], *, timeout: in
         env=sanitized_provider_environment(),
     )
     if result.returncode != 0:
-        raise TriadError("agmsg %s failed with exit code %d." % (name, result.returncode))
+        raise ComboError("agmsg %s failed with exit code %d." % (name, result.returncode))
     return result
 
 
@@ -648,7 +648,7 @@ def register_agmsg_roles(state: Dict[str, Any], agmsg_root: Path) -> None:
 
 def _embedded_transport_path(state: Dict[str, Any]) -> Path:
     project = Path(state["project_root"]).expanduser().resolve()
-    path = project / ".subscription-triad" / "transport" / EMBEDDED_TRANSPORT_DB
+    path = project / ".model-combo" / "transport" / EMBEDDED_TRANSPORT_DB
     _ensure_within(path, project)
     return path
 
@@ -677,7 +677,7 @@ def _embedded_transport(state: Dict[str, Any]) -> Iterator[sqlite3.Connection]:
         yield connection
         connection.commit()
     except sqlite3.Error as exc:
-        raise TriadError("Embedded lifecycle transport failed.") from exc
+        raise ComboError("Embedded lifecycle transport failed.") from exc
     finally:
         if connection is not None:
             connection.close()
@@ -718,7 +718,7 @@ def _embedded_transport_messages(state: Dict[str, Any], limit: int = 20) -> List
             (state["team"], state["orchestrator_role"], state["orchestrator_role"], limit),
         ).fetchall()
     except sqlite3.Error as exc:
-        raise TriadError("Embedded lifecycle transport could not be read.") from exc
+        raise ComboError("Embedded lifecycle transport could not be read.") from exc
     finally:
         with contextlib.suppress(UnboundLocalError):
             connection.close()
@@ -738,7 +738,7 @@ def _embedded_transport_messages(state: Dict[str, Any], limit: int = 20) -> List
 
 def build_handoff(store: RunStore, state: Dict[str, Any]) -> str:
     result_path = store.run_dir / "executor-response.json"
-    return """# Subscription Triad execution handoff
+    return """# Model Combo execution handoff
 
 Run ID: {run_id}
 Approved plan SHA-256: {plan_hash}
@@ -746,7 +746,7 @@ Project root: {project_root}
 
 Read and obey the complete task, context, acceptance criteria, and approved plan below. Work only inside the approved scope. Preserve unrelated user changes. Implement the feature, run the most relevant tests, and report exact files changed, checks run, failures, and remaining risks. Do not spawn subagents. Do not use or request API keys. Do not alter this run's plan or approval artifacts.
 
-Write your final structured response to stdout; Subscription Triad stores it at:
+Write your final structured response to stdout; Model Combo stores it at:
 {result_path}
 
 ## Task
@@ -777,7 +777,7 @@ Write your final structured response to stdout; Subscription Triad stores it at:
 
 
 def _start_worker(store: RunStore, agmsg_root: Optional[Path], mode: str) -> int:
-    worker = Path(__file__).with_name("triad_worker.py")
+    worker = Path(__file__).with_name("combo_worker.py")
     log_path = store.run_dir / ("worker-%s.log" % mode)
     command = [sys.executable, str(worker), "--run", str(store.run_dir), "--mode", mode]
     if agmsg_root is not None:
@@ -795,7 +795,7 @@ def _start_worker(store: RunStore, agmsg_root: Optional[Path], mode: str) -> int
                 close_fds=True,
             )
     except OSError as exc:
-        raise TriadError("Could not start the detached Grok worker.") from exc
+        raise ComboError("Could not start the detached Grok worker.") from exc
     return process.pid
 
 
@@ -803,9 +803,9 @@ def dispatch_grok(run_dir: str) -> Dict[str, Any]:
     store = RunStore(Path(run_dir))
     state = store.read()
     if state.get("state") != "approved":
-        raise TriadError("Grok dispatch requires an explicitly approved plan.")
+        raise ComboError("Grok dispatch requires an explicitly approved plan.")
     if state.get("approved_plan_sha256") != state.get("plan_sha256"):
-        raise TriadError("The approved plan hash is stale; review the current plan again.")
+        raise ComboError("The approved plan hash is stale; review the current plan again.")
     grok_status = check_grok_subscription(Path(state["project_root"]))
     agmsg_root = find_agmsg_root()
     if agmsg_root:
@@ -815,7 +815,7 @@ def dispatch_grok(run_dir: str) -> Dict[str, Any]:
 
     def mark_dispatched(current: Dict[str, Any]) -> None:
         if current.get("state") != "approved" or current.get("approved_plan_sha256") != current.get("plan_sha256"):
-            raise TriadError("Approval changed before dispatch.")
+            raise ComboError("Approval changed before dispatch.")
         current["state"] = "dispatched"
         current["execution_round"] = int(current.get("execution_round", 0)) + 1
         current["grok_model"] = grok_status["model"]
@@ -825,7 +825,7 @@ def dispatch_grok(run_dir: str) -> Dict[str, Any]:
     store.mutate(mark_dispatched)
     try:
         pid = _start_worker(store, agmsg_root, "initial")
-    except TriadError:
+    except ComboError:
         def rollback(current: Dict[str, Any]) -> None:
             if current.get("state") == "dispatched" and current.get("worker_pid") is None:
                 current["state"] = "approved"
@@ -847,7 +847,7 @@ def continue_grok(run_dir: str, instructions: str) -> Dict[str, Any]:
     instruction_text = require_text("instructions", instructions)
     state = store.read()
     if state.get("state") not in {"executed", "verification_failed", "execution_failed"}:
-        raise TriadError("Grok continuation is allowed only after an execution result or failed verification.")
+        raise ComboError("Grok continuation is allowed only after an execution result or failed verification.")
     grok_status = check_grok_subscription(Path(state["project_root"]))
     agmsg_root = find_agmsg_root()
     if agmsg_root:
@@ -862,7 +862,7 @@ def continue_grok(run_dir: str, instructions: str) -> Dict[str, Any]:
 
     def mark_dispatched(current: Dict[str, Any]) -> None:
         if current.get("state") not in {"executed", "verification_failed", "execution_failed"}:
-            raise TriadError("Execution state changed before continuation.")
+            raise ComboError("Execution state changed before continuation.")
         current["state"] = "dispatched"
         current["execution_round"] = round_number
         current["grok_model"] = grok_status["model"]
@@ -873,7 +873,7 @@ def continue_grok(run_dir: str, instructions: str) -> Dict[str, Any]:
     store.mutate(mark_dispatched)
     try:
         pid = _start_worker(store, agmsg_root, "continue")
-    except TriadError:
+    except ComboError:
         def rollback(current: Dict[str, Any]) -> None:
             if current.get("state") == "dispatched" and current.get("worker_pid") is None:
                 current["state"] = "verification_failed"
@@ -895,7 +895,7 @@ def prepare_continuation_request(run_dir: str, instructions: str) -> Dict[str, s
     store = RunStore(Path(run_dir))
     state = store.read()
     if state.get("state") not in {"executed", "verification_failed", "execution_failed"}:
-        raise TriadError("Grok continuation is allowed only after an execution result or failed verification.")
+        raise ComboError("Grok continuation is allowed only after an execution result or failed verification.")
     instruction_text = require_text("instructions", instructions)
     request_dir = store.run_dir / ".provider-requests"
     request_dir.mkdir(mode=0o700, exist_ok=True)
@@ -937,16 +937,16 @@ def build_grok_command(state: Dict[str, Any], store: RunStore, mode: str) -> Lis
     if mode == "continue":
         followup = state.get("active_followup")
         if not isinstance(followup, str):
-            raise TriadError("Continuation prompt is missing.")
+            raise ComboError("Continuation prompt is missing.")
         return base + ["--resume", state["grok_session_id"], "--prompt-file", followup]
-    raise TriadError("Unknown worker mode: %s" % mode)
+    raise ComboError("Unknown worker mode: %s" % mode)
 
 
 def _agmsg_send(agmsg_root: Optional[Path], state: Dict[str, Any], body: str) -> Optional[str]:
     if agmsg_root is None:
         try:
             return _embedded_transport_send(state, body)
-        except TriadError as exc:
+        except ComboError as exc:
             return str(exc)
     try:
         result = _run_agmsg(
@@ -955,7 +955,7 @@ def _agmsg_send(agmsg_root: Optional[Path], state: Dict[str, Any], body: str) ->
             [state["team"], state["executor_role"], state["orchestrator_role"], body],
         )
         return result.stdout.strip()
-    except TriadError as exc:
+    except ComboError as exc:
         return str(exc)
 
 
@@ -969,11 +969,11 @@ def run_grok_worker(
     store = RunStore(Path(run_dir))
     root = Path(agmsg_root).expanduser().resolve() if agmsg_root else None
     if root is not None and not _valid_agmsg_root(root):
-        raise TriadError("Worker received an invalid agmsg root.")
+        raise ComboError("Worker received an invalid agmsg root.")
 
     def mark_executing(state: Dict[str, Any]) -> None:
         if state.get("state") != "dispatched":
-            raise TriadError("Worker can start only from dispatched state.")
+            raise ComboError("Worker can start only from dispatched state.")
         state["state"] = "executing"
         store.event(state, "grok_execution_started", mode=mode)
 
@@ -987,7 +987,7 @@ def run_grok_worker(
             cwd=Path(state["project_root"]),
             env=sanitized_provider_environment(),
         )
-    except TriadError as exc:
+    except ComboError as exc:
         failure_path = store.run_dir / ("executor-stderr-v%d.log" % round_number)
         _atomic_write_text(failure_path, str(exc) + "\n")
 
@@ -999,7 +999,7 @@ def run_grok_worker(
             store.event(current, "grok_execution_failed", exit_code=None, execution_round=round_number)
 
         failed_state = store.mutate(fail_to_start)
-        message = "TRIAD_EXECUTION_FAILED %s %s" % (state["run_id"], failure_path)
+        message = "COMBO_EXECUTION_FAILED %s %s" % (state["run_id"], failure_path)
         agmsg_result = _agmsg_send(root, failed_state, message)
         return {
             "succeeded": False,
@@ -1028,7 +1028,7 @@ def run_grok_worker(
         )
 
     final_state = store.mutate(finish)
-    signal = "TRIAD_EXECUTION_DONE" if succeeded else "TRIAD_EXECUTION_FAILED"
+    signal = "COMBO_EXECUTION_DONE" if succeeded else "COMBO_EXECUTION_FAILED"
     message = "%s %s %s" % (signal, state["run_id"], response_path)
     agmsg_result = _agmsg_send(root, final_state, message)
     return {
@@ -1044,7 +1044,7 @@ def _read_agmsg_messages(agmsg_root: Optional[Path], state: Dict[str, Any]) -> L
     if agmsg_root is None:
         try:
             return _embedded_transport_messages(state)
-        except TriadError:
+        except ComboError:
             return []
     try:
         result = _run_agmsg(
@@ -1052,7 +1052,7 @@ def _read_agmsg_messages(agmsg_root: Optional[Path], state: Dict[str, Any]) -> L
             "api.sh",
             ["get", "teams", state["team"], "messages", "--agent", state["orchestrator_role"], "--limit", "20"],
         )
-    except TriadError:
+    except ComboError:
         return []
     messages: List[Dict[str, Any]] = []
     for line in result.stdout.splitlines():
@@ -1077,20 +1077,20 @@ def run_status(run_dir: str) -> Dict[str, Any]:
 def record_verification(run_dir: str, verdict: str, report: str) -> Dict[str, Any]:
     store = RunStore(Path(run_dir))
     if verdict not in {"pass", "fail"}:
-        raise TriadError("Verification verdict must be `pass` or `fail`.")
+        raise ComboError("Verification verdict must be `pass` or `fail`.")
     report_text = require_text("report", report)
     before = store.read()
     if before.get("state") not in {"executed", "execution_failed"}:
-        raise TriadError("Verification requires a completed Grok execution round.")
+        raise ComboError("Verification requires a completed Grok execution round.")
     if verdict == "pass" and before.get("state") != "executed":
-        raise TriadError("A failed Grok process cannot receive a passing verification verdict.")
+        raise ComboError("A failed Grok process cannot receive a passing verification verdict.")
     number = int(before.get("verification_count", 0)) + 1
     _atomic_write_text(store.run_dir / ("verification-v%d.md" % number), report_text)
     _atomic_write_text(store.run_dir / "verification.md", report_text)
 
     def change(state: Dict[str, Any]) -> None:
         if state.get("state") not in {"executed", "execution_failed"}:
-            raise TriadError("Execution state changed before verification was recorded.")
+            raise ComboError("Execution state changed before verification was recorded.")
         state["verification_count"] = number
         state["verification_verdict"] = verdict
         state["state"] = "complete" if verdict == "pass" else "verification_failed"

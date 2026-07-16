@@ -1,9 +1,9 @@
 ---
-name: subscription-triad
+name: model-combo
 description: Run a subscription-only coding workflow in which the current Codex root plans and researches, Claude Fable 5 independently reviews the exact plan, Grok Build executes only an approved plan, and Codex verifies the result. Use when a user asks for Codex, Fable, and Grok to collaborate on a feature, requests a plan-review-build pipeline, wants official CLI subscription authentication instead of API billing, wants one temporary provider authorization per feature, or wants provider-context reuse with a persistent Grok execution session.
 ---
 
-# Subscription Triad
+# Model Combo
 
 Keep the current Codex task as the root orchestrator. The root owns intent, repository research, the canonical plan, review reconciliation, execution authorization, integration, verification, and the final answer. Do not delegate orchestration to Fable or Grok.
 

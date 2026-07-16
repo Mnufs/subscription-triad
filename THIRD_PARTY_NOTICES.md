@@ -1,6 +1,6 @@
 # Third-party notices
 
-Subscription Triad is an independent project. It is not affiliated with, endorsed by, or sponsored by OpenAI, Anthropic, xAI, Cjbuilds, or fujibee.
+Model Combo is an independent project. It is not affiliated with, endorsed by, or sponsored by OpenAI, Anthropic, xAI, Cjbuilds, or fujibee.
 
 Architecture and selected fail-closed Claude CLI patterns were adapted from [Cjbuilds/Codex-Orchestration](https://github.com/Cjbuilds/Codex-Orchestration). The lifecycle transport design is inspired by [fujibee/agmsg](https://github.com/fujibee/agmsg); when agmsg is installed, the integration uses only its documented external script interface. The independently implemented embedded fallback uses a separate project-local schema and does not copy or mutate agmsg's private data. Both upstream projects are distributed under the MIT License.
 

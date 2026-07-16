@@ -1,0 +1,50 @@
+{
+  "name": "model-combo",
+  "version": "0.4.0",
+  "description": "Subscription-native orchestration for AI coding CLIs.",
+  "author": {
+    "name": "Mnufs",
+    "url": "https://github.com/Mnufs"
+  },
+  "homepage": "https://github.com/Mnufs/model-combo#readme",
+  "repository": "https://github.com/Mnufs/model-combo",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "codex-plugin",
+    "claude-fable",
+    "claude-code",
+    "grok-build",
+    "agmsg",
+    "subscription",
+    "orchestration",
+    "multi-model",
+    "agent-orchestration"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Model Combo",
+    "shortDescription": "One gated coding pipeline across subscription CLIs",
+    "longDescription": "A zero-project-config, fail-closed Codex plugin that coordinates official subscription-authenticated coding CLIs, binds Fable approval to an exact plan hash, dispatches Grok Build only after approval, and requires independent Codex verification.",
+    "developerName": "Mnufs",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/Mnufs/model-combo",
+    "brandColor": "#4F46E5",
+    "capabilities": [
+      "Subscription-native CLI orchestration",
+      "One temporary authorization per feature",
+      "No persistent network configuration",
+      "Independent plan review",
+      "Plan-hash approval gate",
+      "Persistent Grok execution sessions",
+      "Embedded lifecycle transport fallback",
+      "Root verification"
+    ],
+    "defaultPrompt": [
+      "Use $model-combo to implement this feature through the full gated workflow.",
+      "Use $model-combo to check provider readiness without executing anything.",
+      "Use $model-combo to resume the approved Grok execution and verify the result."
+    ]
+  }
+}

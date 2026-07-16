@@ -1,0 +1,4 @@
+interface:
+  display_name: "Model Combo"
+  short_description: "One gated pipeline across subscription CLIs"
+  default_prompt: "Use $model-combo to plan, review, execute, and verify this feature with one temporary provider authorization."

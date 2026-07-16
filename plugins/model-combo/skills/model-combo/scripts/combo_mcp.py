@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP facade for Subscription Triad."""
+"""MCP facade for Model Combo."""
 
 from __future__ import annotations
 
@@ -9,16 +9,16 @@ import sys
 from typing import Any, Dict, List, Optional, Set
 import uuid
 
-import triad_core
-import triad_session
+import combo_core
+import combo_session
 
 
-STRING = {"type": "string", "maxLength": triad_core.MAX_TEXT_CHARS}
-PROVIDER_BRIDGE = Path(__file__).with_name("triad_provider.py").resolve()
+STRING = {"type": "string", "maxLength": combo_core.MAX_TEXT_CHARS}
+PROVIDER_BRIDGE = Path(__file__).with_name("combo_provider.py").resolve()
 
 
 def _provider_session_request(
-    store: triad_core.RunStore,
+    store: combo_core.RunStore,
     state: Dict[str, Any],
     project: Path,
 ) -> Dict[str, Any]:
@@ -28,7 +28,7 @@ def _provider_session_request(
         "argv": [sys.executable, str(PROVIDER_BRIDGE), "session", "--run", str(store.run_dir)],
         "cwd": str(project),
         "approval_reason": (
-            "Allow one temporary Subscription Triad feature session for run %s in this target "
+            "Allow one temporary Model Combo feature session for run %s in this target "
             "repository. The process can only check official subscription CLIs, review this run's "
             "plans with Fable, and dispatch or resume its approved Grok execution."
             % state["run_id"]
@@ -40,8 +40,8 @@ def _provider_session_request(
         "retain_process_session": True,
         "stdin_protocol": "utf-8-json-lines",
         "expected_ready_event": "session_ready",
-        "session_idle_timeout_seconds": triad_session.SESSION_IDLE_TIMEOUT_SECONDS,
-        "session_hard_timeout_seconds": triad_session.SESSION_HARD_TIMEOUT_SECONDS,
+        "session_idle_timeout_seconds": combo_session.SESSION_IDLE_TIMEOUT_SECONDS,
+        "session_hard_timeout_seconds": combo_session.SESSION_HARD_TIMEOUT_SECONDS,
         "run_dir": str(store.run_dir),
     }
 
@@ -68,8 +68,8 @@ def _provider_session_input(
     }
 
 
-def _run_context(run_dir: str) -> tuple[triad_core.RunStore, Dict[str, Any], Path]:
-    store = triad_core.RunStore(Path(run_dir))
+def _run_context(run_dir: str) -> tuple[combo_core.RunStore, Dict[str, Any], Path]:
+    store = combo_core.RunStore(Path(run_dir))
     state = store.read()
     project = Path(state["project_root"]).expanduser().resolve()
     return store, state, project
@@ -240,10 +240,10 @@ def _tool_result(payload: Dict[str, Any], *, is_error: bool = False) -> Dict[str
 
 def _arguments(value: Any, allowed: Set[str]) -> Dict[str, Any]:
     if not isinstance(value, dict):
-        raise triad_core.TriadError("Tool arguments must be an object.")
+        raise combo_core.ComboError("Tool arguments must be an object.")
     unexpected = sorted(set(value) - allowed)
     if unexpected:
-        raise triad_core.TriadError("Unexpected tool argument(s): %s." % ", ".join(unexpected))
+        raise combo_core.ComboError("Unexpected tool argument(s): %s." % ", ".join(unexpected))
     return value
 
 
@@ -254,7 +254,7 @@ def call_tool(name: str, arguments: Any) -> Dict[str, Any]:
         return _provider_session_input("doctor", store.run_dir)
     if name == "create_run":
         args = _arguments(arguments, {"project_root", "task", "acceptance_criteria", "context"})
-        return triad_core.create_run(
+        return combo_core.create_run(
             args.get("project_root"),
             args.get("task"),
             args.get("acceptance_criteria"),
@@ -262,19 +262,19 @@ def call_tool(name: str, arguments: Any) -> Dict[str, Any]:
         )
     if name == "record_plan":
         args = _arguments(arguments, {"run_dir", "plan"})
-        return triad_core.record_plan(args.get("run_dir"), args.get("plan"))
+        return combo_core.record_plan(args.get("run_dir"), args.get("plan"))
     if name == "start_provider_session":
         args = _arguments(arguments, {"run_dir"})
         store, state, project = _run_context(args.get("run_dir"))
-        state = triad_session.recover_orphaned_worker(store, state)
+        state = combo_session.recover_orphaned_worker(store, state)
         if state.get("state") not in {"planned", "approved", "executed", "verification_failed", "execution_failed"}:
-            raise triad_core.TriadError("Record a canonical plan before starting the provider session.")
+            raise combo_core.ComboError("Record a canonical plan before starting the provider session.")
         return _provider_session_request(store, state, project)
     if name == "review_plan":
         args = _arguments(arguments, {"run_dir", "effort"})
         effort = args.get("effort", "high")
         if effort not in {"low", "medium", "high", "xhigh", "max"}:
-            raise triad_core.TriadError("Unsupported Fable effort: %s" % effort)
+            raise combo_core.ComboError("Unsupported Fable effort: %s" % effort)
         store, _state, _project = _run_context(args.get("run_dir"))
         return _provider_session_input(
             "review",
@@ -288,7 +288,7 @@ def call_tool(name: str, arguments: Any) -> Dict[str, Any]:
     if name == "continue_grok":
         args = _arguments(arguments, {"run_dir", "instructions"})
         store, _state, _project = _run_context(args.get("run_dir"))
-        request = triad_core.prepare_continuation_request(str(store.run_dir), args.get("instructions"))
+        request = combo_core.prepare_continuation_request(str(store.run_dir), args.get("instructions"))
         return _provider_session_input(
             "continue",
             store.run_dir,
@@ -303,11 +303,11 @@ def call_tool(name: str, arguments: Any) -> Dict[str, Any]:
         return _provider_session_input("close", store.run_dir)
     if name == "run_status":
         args = _arguments(arguments, {"run_dir"})
-        return triad_core.run_status(args.get("run_dir"))
+        return combo_core.run_status(args.get("run_dir"))
     if name == "record_verification":
         args = _arguments(arguments, {"run_dir", "verdict", "report"})
-        return triad_core.record_verification(args.get("run_dir"), args.get("verdict"), args.get("report"))
-    raise triad_core.TriadError("Unknown tool: %r." % name)
+        return combo_core.record_verification(args.get("run_dir"), args.get("verdict"), args.get("report"))
+    raise combo_core.ComboError("Unknown tool: %r." % name)
 
 
 def handle_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -319,7 +319,7 @@ def handle_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         result: Dict[str, Any] = {
             "protocolVersion": "2025-06-18",
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "subscription-triad", "version": "0.3.0"},
+            "serverInfo": {"name": "model-combo", "version": "0.4.0"},
         }
     elif method == "ping":
         result = {}
@@ -331,9 +331,9 @@ def handle_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         arguments = params.get("arguments", {}) if isinstance(params, dict) else {}
         try:
             if not isinstance(name, str):
-                raise triad_core.TriadError("Tool name must be a string.")
+                raise combo_core.ComboError("Tool name must be a string.")
             result = _tool_result(call_tool(name, arguments))
-        except (triad_core.TriadError, OSError, UnicodeDecodeError) as exc:
+        except (combo_core.ComboError, OSError, UnicodeDecodeError) as exc:
             result = _tool_result({"available": False, "error": str(exc)}, is_error=True)
     else:
         return {

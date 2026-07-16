@@ -15,7 +15,7 @@ Provider readiness also requires a fresh network-backed model listing. Cached Gr
 
 ## Host permission boundary
 
-The plugin does not change target-project or global Codex network configuration. Its MCP server performs local state operations and returns one argument-vector request that starts `triad_provider.py session` for a specific run and target repository. The root asks the Codex host to approve that one temporary feature session, then sends later provider actions as bounded JSON lines over the already-approved process stdin.
+The plugin does not change target-project or global Codex network configuration. Its MCP server performs local state operations and returns one argument-vector request that starts `combo_provider.py session` for a specific run and target repository. The root asks the Codex host to approve that one temporary feature session, then sends later provider actions as bounded JSON lines over the already-approved process stdin.
 
 The bridge is deliberately narrow:
 
@@ -51,7 +51,7 @@ Changing the plan invalidates approval. Once execution starts, plan mutation is 
 
 Provider prompt caches typically match a stable prefix, not the semantic idea of "the same feature." Cache policies and hit metrics are provider-controlled and may not be exposed under subscriptions.
 
-Subscription Triad optimizes the controllable parts:
+Model Combo optimizes the controllable parts:
 
 - stable Fable system instructions precede the changing review packet;
 - the root sends only canonical artifacts, not the whole Codex transcript;
@@ -76,4 +76,4 @@ Fresh Fable calls deliberately trade session reuse for independent review and to
 
 ## Local data
 
-Run artifacts live under `<project>/.subscription-triad/runs/<uuid>/`. They may contain task text, repository context, plans, reviews, provider output, and verification reports. When external agmsg is absent, compact lifecycle messages live under `<project>/.subscription-triad/transport/`. The default project `.gitignore` entry should exclude `.subscription-triad/`; review artifacts before sharing them manually.
+Run artifacts live under `<project>/.model-combo/runs/<uuid>/`. They may contain task text, repository context, plans, reviews, provider output, and verification reports. When external agmsg is absent, compact lifecycle messages live under `<project>/.model-combo/transport/`. The default project `.gitignore` entry should exclude `.model-combo/`; review artifacts before sharing them manually.
