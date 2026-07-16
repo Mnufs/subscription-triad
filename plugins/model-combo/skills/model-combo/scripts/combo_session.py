@@ -50,9 +50,9 @@ def validate_run_binding(
     project = Path(project_value).expanduser().resolve()
     if not project.is_dir():
         raise combo_core.ComboError("The run's target project is unavailable.")
-    expected_runs_root = (project / ".model-combo" / "runs").resolve()
+    expected_runs_root = combo_core.project_runs_root(project).resolve()
     if store.run_dir.parent != expected_runs_root:
-        raise combo_core.ComboError("Provider session run is outside its target project.")
+        raise combo_core.ComboError("Provider session run is outside its project state directory.")
     run_id = state.get("run_id")
     if not isinstance(run_id, str) or run_id != store.run_dir.name or not combo_core.RUN_ID_RE.match(run_id):
         raise combo_core.ComboError("Provider session run identity is invalid.")

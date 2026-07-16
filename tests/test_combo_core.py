@@ -12,8 +12,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "plugins" / "model-combo" / "skills" / "model-combo" / "scripts"
+sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(SCRIPTS))
 
+import support  # noqa: E402,F401
 import combo_core  # noqa: E402
 
 
@@ -64,6 +66,43 @@ class RunStateTests(unittest.TestCase):
         self.assertEqual("planned", changed["state"]["state"])
         self.assertIsNone(changed["state"]["approved_plan_sha256"])
         self.assertNotEqual(first_hash, changed["state"]["plan_sha256"])
+
+    def test_run_state_is_outside_target_project(self):
+        run_dir = Path(self.run_dir)
+        self.assertEqual(
+            combo_core.project_runs_root(self.project).resolve(),
+            run_dir.parent,
+        )
+        self.assertFalse((self.project / ".model-combo").exists())
+        self.assertNotIn(self.project.resolve(), run_dir.parents)
+
+    def test_state_directories_are_private(self):
+        if os.name == "nt":
+            self.skipTest("POSIX permission bits are not available on Windows")
+        run_dir = Path(self.run_dir)
+        private_directories = (
+            combo_core.state_root(),
+            combo_core.state_root() / "projects",
+            combo_core.project_state_root(self.project),
+            combo_core.project_runs_root(self.project),
+            run_dir,
+        )
+        for path in private_directories:
+            with self.subTest(path=path):
+                self.assertEqual(0o700, path.stat().st_mode & 0o777)
+
+    def test_state_root_environment_override_is_absolute(self):
+        with tempfile.TemporaryDirectory() as temp:
+            explicit = Path(temp) / "custom-state"
+            source = {combo_core.STATE_DIR_ENV: str(explicit)}
+            expected = Path(os.path.abspath(str(explicit)))
+            self.assertEqual(expected, combo_core.state_root(source))
+            self.assertEqual(
+                expected / "projects" / combo_core.project_state_key(self.project) / "runs",
+                combo_core.project_runs_root(self.project, source),
+            )
+        with self.assertRaisesRegex(combo_core.ComboError, "absolute path"):
+            combo_core.state_root({combo_core.STATE_DIR_ENV: "relative-state"})
 
     def test_revise_requires_new_plan_and_counts_rounds(self):
         combo_core.record_plan(self.run_dir, "Initial plan")
@@ -165,10 +204,16 @@ class ProviderBoundaryTests(unittest.TestCase):
             created = combo_core.create_run(str(project), "Task", "Acceptance", "Context")
             state = created["state"]
             transport_path = combo_core._embedded_transport_path(state)
+            self.assertEqual(
+                combo_core.project_transport_root(project).resolve() / combo_core.EMBEDDED_TRANSPORT_DB,
+                transport_path,
+            )
+            self.assertFalse((project / ".model-combo").exists())
             self.assertEqual([], combo_core._read_agmsg_messages(None, state))
             self.assertFalse(transport_path.exists())
             message_id = combo_core._agmsg_send(None, state, "COMBO_EXECUTION_DONE test")
             messages = combo_core._read_agmsg_messages(None, state)
+            self.assertFalse((project / ".model-combo").exists())
         self.assertEqual("1", message_id)
         self.assertEqual(1, len(messages))
         self.assertEqual("COMBO_EXECUTION_DONE test", messages[0]["body"])
@@ -220,12 +265,13 @@ class ProviderBoundaryTests(unittest.TestCase):
         models = subprocess.CompletedProcess(
             ["grok", "--oauth", "models"],
             0,
-            "Default model: grok-4.5\n",
-            "Failed to fetch models: tcp connect error\n",
+            "You are logged in with grok.com.\nDefault model: grok-build\n"
+            "Available models:\n- grok-build (default)\n",
+            "ERROR Settings fetch failed after 3 attempts\n",
         )
         with mock.patch.object(combo_core, "resolve_grok", return_value=Path("/fake/grok")):
             with mock.patch.object(combo_core, "_run", side_effect=(inspection, models)):
-                with self.assertRaisesRegex(combo_core.ComboError, "approved provider session"):
+                with self.assertRaisesRegex(combo_core.ComboError, "cached fallback"):
                     combo_core.check_grok_subscription()
 
     def test_grok_timeout_identifies_the_failed_stage(self):

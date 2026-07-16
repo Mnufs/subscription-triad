@@ -7,7 +7,7 @@ Subscription-native orchestration for AI coding CLIs.
 > Turn your AI subscriptions into one coding team.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Status: v0.4.0 preview](https://img.shields.io/badge/status-v0.4.0_preview-orange)
+![Status: v0.5.0 preview](https://img.shields.io/badge/status-v0.5.0_preview-orange)
 [![CI](https://github.com/Mnufs/model-combo/actions/workflows/tests.yml/badge.svg)](https://github.com/Mnufs/model-combo/actions/workflows/tests.yml)
 
 *Formerly `subscription-triad`.*
@@ -42,7 +42,7 @@ Model Combo makes the responsibilities explicit:
 - **Claude Fable 5 is the reviewer.** It receives a self-contained packet with no tools, no edits, no permission prompts, and no persistent review session.
 - **Grok Build is the executor.** It starts only after Fable approves the current plan hash and resumes the same feature session only for bounded corrections.
 - **The state machine is fail-closed.** Missing authentication, malformed output, a changed plan, a lost session, or an exhausted review limit stops execution.
-- **Large context stays local.** Artifacts live in the target project; agmsg or the embedded SQLite transport carries short lifecycle signals and paths.
+- **Large context stays local without touching the worktree.** Artifacts live in a private user-state directory outside the target project; agmsg or the embedded SQLite transport carries short lifecycle signals and paths.
 
 ### Where it fits
 
@@ -77,7 +77,7 @@ This representative record shows the observable protocol; it is not a raw provid
 
 ```text
 USER          Implement the feature and keep the existing public contract.
-CODEX         run created: .model-combo/runs/7b3c…/
+CODEX         run created: <state-root>/projects/8d41…/runs/7b3c…/
 CODEX         plan v1 recorded: sha256=9f2a6c1e…
 HOST          provider session ready; scope=single_feature_session
 DOCTOR        claude=ready (firstParty/Pro), grok=ready (OAuth), api_env=[]
@@ -114,7 +114,7 @@ Grok Build does not currently expose a machine-readable subscription-plan identi
 | Every Fable approval is bound to the exact canonical plan SHA-256. | It is not a voting ensemble or model router. |
 | Provider failures, stale hashes, lost sessions, and malformed replies fail closed. | It does not choose a “winning” model answer. |
 | The plugin does not change project/global Codex network settings or create persistent approval rules. | It does not grant network access or replace the user's host permission policy. |
-| Tokens are never requested or persisted; run artifacts remain project-local. | It does not buy, bundle, extend, or guarantee any vendor subscription. |
+| Tokens are never requested or persisted; run artifacts stay in private user state outside the target worktree. | It does not buy, bundle, extend, or guarantee any vendor subscription. |
 | Codex must verify the actual diff and tests before a run can pass. | Provider success is not treated as proof that the feature is correct. |
 
 ### One feature, one authorization
@@ -125,13 +125,17 @@ The process is locked to one run ID and one target repository. It accepts no arb
 
 ### Local data
 
-Run artifacts live under:
+Run artifacts and the embedded lifecycle database live outside target worktrees:
 
-```text
-<project>/.model-combo/runs/<uuid>/
-```
+| Platform | Default state root |
+|---|---|
+| macOS | `~/Library/Application Support/Model Combo/` |
+| Linux/Unix | `${XDG_STATE_HOME:-~/.local/state}/model-combo/` |
+| Windows | `%LOCALAPPDATA%\Model Combo\` |
 
-They can contain the task, repository context, plans, reviews, executor output, logs, and verification reports. The directory is ignored by this repository, but users should also ignore `.model-combo/` in target projects and review artifacts before sharing them.
+Each project is isolated as `projects/<project-hash>/`. Runs live in `runs/<uuid>/`, and the embedded transport uses `transport/messages.sqlite3`. No target-project configuration or `.gitignore` change is needed.
+
+Set `MODEL_COMBO_STATE_DIR` to an absolute path to override the root. Changing it makes existing runs unavailable until the original value is restored. State directories use mode `0700` where POSIX permissions are available. Artifacts can contain the task, absolute project path, repository context, plans, reviews, executor output, logs, and verification reports; review them before sharing.
 
 For the complete threat, billing, caller, failure, and cache boundaries, read [security-and-cache.md](plugins/model-combo/skills/model-combo/references/security-and-cache.md) and [SECURITY.md](SECURITY.md).
 
@@ -167,6 +171,8 @@ grok login --oauth
 
 Do not configure Anthropic or xAI API keys for this workflow. agmsg is optional: when it is installed, Model Combo uses only its public scripts; otherwise the embedded dependency-free local transport is selected automatically.
 
+If `grok --oauth models` says you are logged in but also reports `Settings fetch failed after ...`, OAuth exists but online readiness is not confirmed. Any displayed default model may be cached fallback output, so Model Combo stops before model calls until the CLI can refresh successfully.
+
 ### Install from GitHub
 
 ```bash
@@ -188,6 +194,10 @@ cd model-combo
 codex plugin marketplace add "$(pwd)"
 codex plugin add model-combo@model-combo
 ```
+
+### Migrating from 0.4.x
+
+Version 0.5.0 moves all new run artifacts and embedded transport data out of target worktrees. Existing `<project>/.model-combo/` runs are not scanned or moved automatically; finish them with 0.4.x or move them deliberately before resuming. New runs need no project `.gitignore` entry.
 
 ### Migrating from `subscription-triad`
 
@@ -226,7 +236,7 @@ The plugin includes a dependency-free CLI for development and state-machine debu
 COMBO="plugins/model-combo/skills/model-combo/scripts/combo_cli.py"
 
 python3 "$COMBO" doctor --project /path/to/project
-python3 "$COMBO" create +  --project /path/to/project +  --task-file task.md +  --acceptance-file acceptance.md +  --context-file context.md
+python3 "$COMBO" create --project /path/to/project --task-file task.md --acceptance-file acceptance.md --context-file context.md
 python3 "$COMBO" --help
 ```
 

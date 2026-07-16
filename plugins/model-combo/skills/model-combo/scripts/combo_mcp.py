@@ -319,7 +319,7 @@ def handle_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         result: Dict[str, Any] = {
             "protocolVersion": "2025-06-18",
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "model-combo", "version": "0.4.0"},
+            "serverInfo": {"name": "model-combo", "version": "0.5.0"},
         }
     elif method == "ping":
         result = {}

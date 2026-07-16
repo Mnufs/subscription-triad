@@ -7,7 +7,7 @@
 | Codex root | Current Codex task authenticated with the user's ChatGPT subscription | A custom OpenAI API provider created by this plugin |
 | Fable reviewer | Official `claude -p`, first-party Claude.ai Pro/Max authentication | `ANTHROPIC_API_KEY`, Bedrock, Vertex, Foundry, extracted OAuth tokens, third-party credential proxying |
 | Grok executor | Official `grok` CLI with `--oauth` and the current Grok Build model (`grok-4.5`, with legacy `grok-build` fallback) | `XAI_API_KEY`, `api.x.ai`, OpenRouter, custom endpoint overrides |
-| Handoff transport | Installed agmsg public scripts, or the plugin's separate project-local SQLite lifecycle store | Reading or mutating agmsg's private SQLite/config internals |
+| Handoff transport | Installed agmsg public scripts, or the plugin's separate user-state SQLite lifecycle store outside the target worktree | Reading or mutating agmsg's private SQLite/config internals |
 
 Provider subprocesses receive a sanitized environment. The sanitizer removes Anthropic and xAI API credentials plus endpoint/provider overrides. Claude authentication must additionally report `claude.ai`, `firstParty`, and a Pro or Max subscription. For Grok, every subprocess sets `GROK_DISABLE_API_KEY_AUTH=1`, verifies `loginPolicy.apiKeyAuthDisabled` through `grok inspect --json`, forces the OAuth flag, fixes `--cwd` to the target repository, enables Grok's built-in `workspace` OS sandbox, selects an advertised supported model (`grok-4.5` preferred, legacy `grok-build` accepted), and never constructs an `api.x.ai` request. The workspace profile limits code writes to the target repository while retaining Grok state and OS temporary-directory writes. Grok Build still does not expose an equally strong machine-readable subscription-plan identity.
 
@@ -69,11 +69,19 @@ Fresh Fable calls deliberately trade session reuse for independent review and to
 - Missing pinned Fable runtime identity or unexpected helper model: stop.
 - Five reviews without approval: stop.
 - Changed plan hash after approval: stop.
-- External agmsg unavailable: use the embedded project-local lifecycle transport.
+- External agmsg unavailable: use the embedded user-state lifecycle transport outside the target worktree.
 - Long-lived host process stdin unavailable, session start denied, or session lost: stop without changing Codex configuration; a fresh session requires a fresh one-time approval.
 - Grok nonzero exit: record `execution_failed`; root must verify and decide whether a bounded continuation is appropriate.
 - Verification failure: keep the run incomplete.
 
 ## Local data
 
-Run artifacts live under `<project>/.model-combo/runs/<uuid>/`. They may contain task text, repository context, plans, reviews, provider output, and verification reports. When external agmsg is absent, compact lifecycle messages live under `<project>/.model-combo/transport/`. The default project `.gitignore` entry should exclude `.model-combo/`; review artifacts before sharing them manually.
+Run artifacts and the embedded lifecycle database live outside target worktrees:
+
+- macOS: `~/Library/Application Support/Model Combo/projects/<project-hash>/`
+- Linux/Unix: `${XDG_STATE_HOME:-~/.local/state}/model-combo/projects/<project-hash>/`
+- Windows: `%LOCALAPPDATA%\Model Combo\projects\<project-hash>\`
+
+Run artifacts are under `runs/<uuid>/`; embedded lifecycle messages are under `transport/messages.sqlite3`. `MODEL_COMBO_STATE_DIR` can override the state root, but it must be an absolute path and changing it makes existing runs unavailable until the original value is restored. Model Combo creates its state directories with mode `0700` where POSIX permissions are available, never creates `.model-combo/` in the target project, and never edits the target `.gitignore`.
+
+Artifacts may contain task text, absolute project paths, repository context, plans, reviews, provider output, and verification reports. Review them before sharing manually.

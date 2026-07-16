@@ -14,8 +14,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "plugins" / "model-combo" / "skills" / "model-combo" / "scripts"
+sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(SCRIPTS))
 
+import support  # noqa: E402,F401
 import combo_core  # noqa: E402
 import combo_provider  # noqa: E402
 import combo_session  # noqa: E402
@@ -68,7 +70,7 @@ class ProviderBridgeTests(unittest.TestCase):
                 state["project_root"] = str(other)
 
             store.mutate(relocate)
-            with self.assertRaisesRegex(combo_core.ComboError, "escapes the project root|outside its target project"):
+            with self.assertRaisesRegex(combo_core.ComboError, "escapes its state root|outside its project state"):
                 combo_session.validate_run_binding(run_dir)
 
     def test_orphaned_worker_state_is_recoverable(self):

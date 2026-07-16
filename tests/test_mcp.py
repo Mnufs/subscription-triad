@@ -10,8 +10,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "plugins" / "model-combo" / "skills" / "model-combo" / "scripts"
+sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(SCRIPTS))
 
+import support  # noqa: E402,F401
 import combo_mcp  # noqa: E402
 
 
@@ -26,7 +28,7 @@ class McpTests(unittest.TestCase):
     def test_initialize_and_tool_list(self):
         initialized = combo_mcp.handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         self.assertEqual("model-combo", initialized["result"]["serverInfo"]["name"])
-        self.assertEqual("0.4.0", initialized["result"]["serverInfo"]["version"])
+        self.assertEqual("0.5.0", initialized["result"]["serverInfo"]["version"])
         listed = combo_mcp.handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         names = {tool["name"] for tool in listed["result"]["tools"]}
         self.assertEqual(
@@ -45,7 +47,7 @@ class McpTests(unittest.TestCase):
             names,
         )
 
-    def test_create_run_tool_writes_inside_project(self):
+    def test_create_run_tool_writes_outside_project(self):
         with tempfile.TemporaryDirectory() as temp:
             result = combo_mcp.call_tool(
                 "create_run",
@@ -58,8 +60,12 @@ class McpTests(unittest.TestCase):
             )
             run_dir = Path(result["run_dir"])
             self.assertTrue((run_dir / "state.json").is_file())
-            self.assertEqual(".model-combo", run_dir.parents[1].name)
-            self.assertEqual(Path(temp).resolve(), run_dir.parents[2])
+            self.assertEqual(
+                combo_mcp.combo_core.project_runs_root(Path(temp)).resolve(),
+                run_dir.parent,
+            )
+            self.assertFalse((Path(temp) / ".model-combo").exists())
+            self.assertNotIn(Path(temp).resolve(), run_dir.parents)
 
     def test_start_prepares_only_host_approved_feature_session(self):
         with tempfile.TemporaryDirectory() as temp:
