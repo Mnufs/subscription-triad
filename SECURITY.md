@@ -15,6 +15,6 @@ Include the affected version, operating system, reproduction steps, expected beh
 - Provider subprocesses must not receive Anthropic or xAI API keys or custom endpoint overrides.
 - Fable review must remain no-tools and read-only.
 - Grok dispatch must require an approval digest equal to the current plan digest.
-- Run paths must remain inside the recorded project root.
+- Run paths must remain inside the recorded project's hashed user-state directory and outside the target worktree.
 - agmsg integration must use its public scripts rather than direct database mutation.
 - Provider output must never be treated as root verification.

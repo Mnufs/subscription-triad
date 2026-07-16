@@ -15,6 +15,7 @@ Keep the current Codex task as the root orchestrator. The root owns intent, repo
 4. Require first-party Claude Pro/Max login and Grok Build OAuth login. Never request, store, print, or configure API keys.
 5. If `doctor` reports API environment variables in the parent process, disclose them. Provider subprocesses strip them mechanically, but the user should remove unrelated global keys when strict subscription-only operation is required.
 6. Never add or modify a target `.codex/config.toml`, the user's `~/.codex/config.toml`, permission profiles, network allowlists, proxy rules, or persistent command approvals for this workflow.
+7. Keep run artifacts and the embedded lifecycle database in Model Combo's user-level state directory. Never create `.model-combo/` or edit `.gitignore` in the target repository.
 
 Read [security-and-cache.md](references/security-and-cache.md) when authentication, billing, cache behavior, threat boundaries, session expiry, or provider failures matter.
 
@@ -40,7 +41,7 @@ Inspect the real repository first. Collect:
 - relevant files, current behavior, constraints, and dirty-worktree facts;
 - security, compatibility, concurrency, data, and verification risks.
 
-Call `create_run` once with the project root, task, acceptance criteria, and compact verified context. Keep the returned `run_dir`; every later operation and the provider session must use it.
+Call `create_run` once with the project root, task, acceptance criteria, and compact verified context. It returns a private user-state path outside the target worktree, isolated by a hash of the canonical project path. Keep the returned `run_dir`; every later operation and the provider session must use it.
 
 ## 2. Produce the canonical Codex plan
 
@@ -80,7 +81,7 @@ Call `dispatch_grok` and send its returned JSON line to the live provider sessio
 - the approved hash equals the current plan hash;
 - the working scope still matches the reviewed context.
 
-The provider session starts an official Grok Build headless process with OAuth forced, API and endpoint override variables removed, `--cwd` fixed to the target repository, the built-in `workspace` OS sandbox, a dedicated feature session ID, no cross-session memory, and the approved handoff artifact. If an external agmsg installation is available, its documented scripts carry lifecycle messages; otherwise the plugin uses its own project-local SQLite transport and never reads or mutates agmsg's database.
+The provider session starts an official Grok Build headless process with OAuth forced, API and endpoint override variables removed, `--cwd` fixed to the target repository, the built-in `workspace` OS sandbox, a dedicated feature session ID, no cross-session memory, and the approved handoff artifact. If an external agmsg installation is available, its documented scripts carry lifecycle messages; otherwise the plugin uses its own user-state SQLite transport outside the target worktree and never reads or mutates agmsg's database.
 
 Poll with `run_status` without blocking the user for more than 60 seconds between updates. Keep the provider process session alive while polling. A Grok exit code of zero is only an execution handoff, not acceptance.
 
@@ -107,7 +108,7 @@ When no more provider work is needed, call `close_provider_session` and send its
 - Keep Codex planning and verification in one root task.
 - Send Fable only the canonical packet. Its calls are fresh for independent review; keep the stable system prefix unchanged and accept that provider cache hits are not guaranteed or user-visible.
 - Give Grok one dedicated session per feature and resume it for bounded corrections.
-- Store large handoffs as run artifacts and exchange paths/status through agmsg instead of repeatedly embedding full transcripts.
+- Store large handoffs as private user-state run artifacts outside the target worktree, and exchange paths/status through agmsg instead of repeatedly embedding full transcripts.
 - Do not optimize cache hit rate at the cost of independent review, stale-plan safety, or scope control.
 
 ## Final response

@@ -13,7 +13,7 @@ class PluginStructureTests(unittest.TestCase):
     def test_manifest_and_companion_paths(self):
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual("model-combo", manifest["name"])
-        self.assertEqual("0.4.0", manifest["version"])
+        self.assertEqual("0.5.0", manifest["version"])
         self.assertEqual(
             "Subscription-native orchestration for AI coding CLIs.",
             manifest["description"],
@@ -38,6 +38,7 @@ class PluginStructureTests(unittest.TestCase):
         self.assertIn("[简体中文](README.zh-CN.md)", english)
         self.assertIn("[English](README.md)", chinese)
         self.assertIn("not a voting ensemble", english)
+        self.assertIn("outside the target worktree", english)
 
     def test_marketplace_points_to_plugin(self):
         marketplace = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))

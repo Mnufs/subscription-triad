@@ -10,8 +10,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "plugins" / "model-combo" / "skills" / "model-combo" / "scripts"
+sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(SCRIPTS))
 
+import support  # noqa: E402,F401
 import combo_core  # noqa: E402
 import combo_session  # noqa: E402
 import combo_worker  # noqa: E402

@@ -42,6 +42,8 @@ CLAUDE_TIMEOUT_SECONDS = 600
 GROK_TIMEOUT_SECONDS = 7_200
 AUTH_TIMEOUT_SECONDS = 30
 EMBEDDED_TRANSPORT_DB = "messages.sqlite3"
+STATE_DIR_ENV = "MODEL_COMBO_STATE_DIR"
+PROJECT_STATE_HASH_LENGTH = 24
 
 SENSITIVE_PROVIDER_ENV = frozenset(
     {
@@ -71,6 +73,82 @@ RUN_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f
 
 class ComboError(RuntimeError):
     """Fail-closed error for an invalid transition or provider operation."""
+
+
+def state_root(source: Optional[Dict[str, str]] = None) -> Path:
+    """Return the user-level state root without creating it."""
+    env = source if source is not None else os.environ
+    explicit = env.get(STATE_DIR_ENV)
+    if explicit:
+        root = Path(explicit).expanduser()
+        if not root.is_absolute():
+            raise ComboError("%s must be an absolute path." % STATE_DIR_ENV)
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support" / "Model Combo"
+    elif os.name == "nt":
+        local_app_data = env.get("LOCALAPPDATA")
+        root = (
+            Path(local_app_data).expanduser() / "Model Combo"
+            if local_app_data
+            else Path.home() / "AppData" / "Local" / "Model Combo"
+        )
+    else:
+        xdg_state_home = env.get("XDG_STATE_HOME")
+        if xdg_state_home:
+            xdg_root = Path(xdg_state_home).expanduser()
+            if not xdg_root.is_absolute():
+                raise ComboError("XDG_STATE_HOME must be an absolute path.")
+            root = xdg_root / "model-combo"
+        else:
+            root = Path.home() / ".local" / "state" / "model-combo"
+    return Path(os.path.abspath(str(root)))
+
+
+def project_state_key(project_root: Path) -> str:
+    project = project_root.expanduser().resolve()
+    return hashlib.sha256(str(project).encode("utf-8")).hexdigest()[:PROJECT_STATE_HASH_LENGTH]
+
+
+def project_state_root(
+    project_root: Path,
+    source: Optional[Dict[str, str]] = None,
+) -> Path:
+    return state_root(source) / "projects" / project_state_key(project_root)
+
+
+def project_runs_root(
+    project_root: Path,
+    source: Optional[Dict[str, str]] = None,
+) -> Path:
+    return project_state_root(project_root, source) / "runs"
+
+
+def project_transport_root(
+    project_root: Path,
+    source: Optional[Dict[str, str]] = None,
+) -> Path:
+    return project_state_root(project_root, source) / "transport"
+
+
+def _ensure_private_directory(path: Path) -> Path:
+    try:
+        path.mkdir(parents=True, mode=0o700, exist_ok=True)
+        info = path.lstat()
+    except OSError as exc:
+        raise ComboError("Model Combo state directory is unavailable: %s" % path) from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ComboError("Model Combo state path must be a real directory: %s" % path)
+    if os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077:
+        raise ComboError(
+            "Model Combo state directory must be private (0700): %s" % path
+        )
+    return path.resolve()
+
+
+def _prepare_project_state(project_root: Path) -> Path:
+    root = _ensure_private_directory(state_root())
+    projects = _ensure_private_directory(root / "projects")
+    return _ensure_private_directory(projects / project_state_key(project_root))
 
 
 def utc_now() -> str:
@@ -245,9 +323,10 @@ def check_grok_subscription(project_root: Optional[Path] = None) -> Dict[str, An
         raise ComboError("Grok Build OAuth is unavailable; run `grok login --oauth`.")
     if any(marker in combined for marker in _GROK_NETWORK_FAILURES):
         raise ComboError(
-            "Grok Build could not refresh models from the approved provider session. Check the host "
-            "proxy or connectivity for `cli-chat-proxy.grok.com` and `auth.x.ai`; do not enable "
-            "persistent Codex network settings."
+            "Grok Build could not refresh provider settings or models. Any displayed default model "
+            "may be cached fallback output and is not accepted as readiness. Check ordinary host "
+            "connectivity for `cli-chat-proxy.grok.com` and `auth.x.ai`; do not enable persistent "
+            "Codex network settings."
         )
     if result.returncode != 0:
         raise ComboError("Grok Build OAuth model check failed.")
@@ -381,7 +460,7 @@ def _ensure_within(child: Path, parent: Path) -> None:
     try:
         child.relative_to(parent)
     except ValueError as exc:
-        raise ComboError("Resolved run path escapes the project root.") from exc
+        raise ComboError("Resolved run path escapes its state root.") from exc
 
 
 class RunStore:
@@ -393,8 +472,9 @@ class RunStore:
         run_id = state.get("run_id")
         if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id):
             raise ComboError("Run id is invalid.")
-        _ensure_within(self.run_dir, project_root)
-        expected = (project_root / ".model-combo" / "runs" / run_id).resolve()
+        expected_runs_root = project_runs_root(project_root).resolve()
+        _ensure_within(self.run_dir, expected_runs_root)
+        expected = (expected_runs_root / run_id).resolve()
         if expected != self.run_dir:
             raise ComboError("Run directory does not match its recorded project and id.")
 
@@ -437,10 +517,8 @@ def create_run(
     selected_id = run_id or str(uuid.uuid4())
     if not RUN_ID_RE.match(selected_id):
         raise ComboError("run_id must be a canonical UUID.")
-    runs_root = project / ".model-combo" / "runs"
-    runs_root.mkdir(parents=True, exist_ok=True)
-    resolved_runs_root = runs_root.resolve()
-    _ensure_within(resolved_runs_root, project)
+    project_state = _prepare_project_state(project)
+    resolved_runs_root = _ensure_private_directory(project_state / "runs")
     run_dir = resolved_runs_root / selected_id
     try:
         run_dir.mkdir(mode=0o700)
@@ -648,15 +726,15 @@ def register_agmsg_roles(state: Dict[str, Any], agmsg_root: Path) -> None:
 
 def _embedded_transport_path(state: Dict[str, Any]) -> Path:
     project = Path(state["project_root"]).expanduser().resolve()
-    path = project / ".model-combo" / "transport" / EMBEDDED_TRANSPORT_DB
-    _ensure_within(path, project)
-    return path
+    return (project_transport_root(project) / EMBEDDED_TRANSPORT_DB).resolve()
 
 
 @contextlib.contextmanager
 def _embedded_transport(state: Dict[str, Any]) -> Iterator[sqlite3.Connection]:
-    path = _embedded_transport_path(state)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    project = Path(state["project_root"]).expanduser().resolve()
+    project_state = _prepare_project_state(project)
+    transport_root = _ensure_private_directory(project_state / "transport")
+    path = transport_root / EMBEDDED_TRANSPORT_DB
     connection: Optional[sqlite3.Connection] = None
     try:
         connection = sqlite3.connect(str(path), timeout=5.0)
