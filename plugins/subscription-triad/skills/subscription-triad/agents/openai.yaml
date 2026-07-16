@@ -1,4 +1,4 @@
 interface:
   display_name: "Subscription Triad"
-  short_description: "Plan, review, and build through subscription CLIs"
-  default_prompt: "Use $subscription-triad to plan, review, execute, and verify this feature."
+  short_description: "Zero-config plan review and execution via subscription CLIs"
+  default_prompt: "Use $subscription-triad to plan, review, execute, and verify this feature without changing Codex network defaults."

@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,45 @@ class McpTests(unittest.TestCase):
             run_dir = Path(result["run_dir"])
             self.assertTrue((run_dir / "state.json").is_file())
             self.assertEqual(Path(temp).resolve(), run_dir.parents[2])
+
+    def test_doctor_prepares_scoped_host_execution_without_calling_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(triad_mcp.triad_core, "doctor") as doctor:
+                result = triad_mcp.call_tool("doctor", {"project_root": temp})
+            doctor.assert_not_called()
+            self.assertEqual("scoped_host_execution", result["action_required"])
+            self.assertEqual("doctor", result["provider_action"])
+            self.assertFalse(result["changes_codex_network_defaults"])
+            self.assertFalse(result["allow_persistent_rule"])
+            self.assertEqual([], result["config_files_to_modify"])
+            self.assertTrue(result["argv"][1].endswith("triad_provider.py"))
+
+    def test_continue_prepares_hash_bound_one_time_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "project"
+            project.mkdir()
+            created = triad_mcp.triad_core.create_run(str(project), "Task", "Acceptance", "Context")
+            run_dir = created["run_dir"]
+            triad_mcp.triad_core.record_plan(run_dir, "Plan")
+            store = triad_mcp.triad_core.RunStore(Path(run_dir))
+
+            def executed(state):
+                state["state"] = "executed"
+
+            store.mutate(executed)
+            result = triad_mcp.call_tool(
+                "continue_grok",
+                {"run_dir": run_dir, "instructions": "Fix the approved regression only."},
+            )
+            argv = result["argv"]
+            request_path = Path(argv[argv.index("--instructions-file") + 1])
+            expected_hash = argv[argv.index("--instructions-sha256") + 1]
+            self.assertTrue(request_path.is_file())
+            self.assertEqual(
+                expected_hash,
+                triad_mcp.triad_core.sha256_text(request_path.read_text(encoding="utf-8")),
+            )
+            self.assertFalse(result["allow_persistent_rule"])
 
     def test_tool_errors_are_returned_without_tracebacks(self):
         response = triad_mcp.handle_request(

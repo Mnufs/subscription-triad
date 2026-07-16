@@ -2,7 +2,7 @@
 
 让 **Codex 负责调研和规划，Claude Fable 5 负责独立审核，Grok Build 负责执行，最后由 Codex 验收**。所有模型都走各自官方 CLI 的订阅登录，不需要 API Key。
 
-> Status: early preview (`0.1.0`). The approval gate and local state machine are implemented and tested; provider availability still depends on the installed official CLIs and current subscription terms.
+> Status: early preview (`0.2.0`). The approval gate, scoped provider bridge, and local state machine are implemented and tested; provider availability still depends on the installed official CLIs and current subscription terms.
 
 ```mermaid
 flowchart LR
@@ -11,7 +11,7 @@ flowchart LR
     H --> F["Claude Fable 5\n只读审核"]
     F -->|"PLAN_REVISE"| C
     F -->|"PLAN_APPROVED"| G["Grok Build OAuth\n执行批准计划"]
-    G --> A["agmsg\n本地状态消息"]
+    G --> A["agmsg / 内置传输\n本地状态消息"]
     A --> V["Codex root\n检查 diff + 测试 + 验收"]
     V -->|"范围内修正"| G
     V -->|"通过"| D["完成"]
@@ -25,7 +25,7 @@ flowchart LR
 - Fable 只能审核计划：无工具、无编辑、无会话持久化。
 - 审批绑定计划 SHA-256；计划一改，原审批自动失效。
 - Grok 只在明确批准后启动，并复用同一个 feature session 处理范围内修正。
-- agmsg 只通过公开的 `join.sh`、`send.sh`、`api.sh` 接口使用，不依赖其 SQLite 内部结构。
+- 已安装 agmsg 时只通过公开的 `join.sh`、`send.sh`、`api.sh` 接口使用；未安装时自动切换到项目内的 Python 标准库传输，不要求用户额外安装或配置。
 - Grok 完成不等于项目完成；Codex 必须独立检查代码和测试。
 
 ## 订阅制安全边界
@@ -34,23 +34,18 @@ flowchart LR
 |---|---|---|
 | Codex | 当前 Codex 任务 | 使用用户已有的 ChatGPT/Codex 登录 |
 | Fable | 官方 `claude -p --model claude-fable-5` | 必须报告 Claude.ai first-party Pro/Max |
-| Grok | 官方 `grok --oauth --model grok-build` | 强制 OAuth 路径，不构造 xAI API 请求 |
+| Grok | 官方 `grok --oauth --model grok-4.5` | 强制 OAuth 路径，不构造 xAI API 请求 |
 
 每个 Claude/Grok 子进程都会移除 `ANTHROPIC_API_KEY`、`XAI_API_KEY` 和相关自定义端点/云平台变量。Grok 子进程还强制设置 `GROK_DISABLE_API_KEY_AUTH=1`，并通过 `grok inspect --json` 验证 CLI 已禁用 API-key 认证。项目不会读取、保存或转发 OAuth Token。
 
-Grok Build CLI 目前没有提供与 `claude auth status` 同等强度的机器可读“订阅类型”证明，因此这里采用可验证的最小边界：禁用 API-key 认证、强制官方 CLI 的 `--oauth`、清除端点覆盖、检查 `grok-build` 可用，并且从不调用 `api.x.ai`。这不是对厂商条款永不变化的保证。
+Grok Build CLI 目前没有提供与 `claude auth status` 同等强度的机器可读“订阅类型”证明，因此这里采用可验证的最小边界：禁用 API-key 认证、强制官方 CLI 的 `--oauth`、清除端点覆盖、检查当前 Grok Build 模型可用（优先 `grok-4.5`，兼容旧 `grok-build` 别名），并且从不调用 `api.x.ai`。这不是对厂商条款永不变化的保证。
 
 ## 前置条件
 
 - Codex CLI/Desktop，以及有效的 ChatGPT/Codex 订阅登录。
 - 官方 Claude Code CLI，以及 Claude Pro/Max 登录。
 - 官方 Grok Build CLI，以及 SuperGrok/X Premium Plus 对应的 OAuth 登录。
-- Python 3.9+、Bash、SQLite。
-- [agmsg](https://github.com/fujibee/agmsg)；最快安装方式：
-
-```bash
-npx agmsg
-```
+- Python 3.9+。
 
 认证：
 
@@ -61,9 +56,33 @@ grok login --oauth
 
 不要设置 Anthropic 或 xAI API Key。
 
+agmsg 不再是安装前置条件：如果系统已经安装 [agmsg](https://github.com/fujibee/agmsg)，插件会复用其公开脚本；否则自动使用内置的本地生命周期传输。两种模式都不需要 daemon，也不会发送网络消息。
+
+### 零配置网络边界
+
+Subscription Triad **不会写入**目标仓库的 `.codex/config.toml`，也不会修改用户的 `~/.codex/config.toml`、默认沙箱或默认网络权限。
+
+插件内 MCP 只负责本地状态、计划哈希和生成精确的 provider 请求。需要访问 Claude 或 Grok 时，Codex 会针对插件内 `triad_provider.py` 的**当次精确命令**请求宿主授权：
+
+- `doctor`：只检查官方 CLI、认证和模型可用性，不调用模型；
+- `review`：仅把当前哈希绑定的审核包交给 Claude Fable；
+- `dispatch` / `continue`：仅在计划已批准后调用官方 Grok OAuth CLI；
+- 每次请求都声明 `single_command`，不创建持久规则，也不要求用户预先开放仓库网络。
+
+这意味着安装后没有针对每个项目的配置步骤。首次真实 provider 操作时仍可能出现 Codex 的标准单次授权提示；这是安全边界，不应通过后台 daemon、全局放权或自动改配置绕过。停用插件后不会留下新的网络配置或常驻调度服务。已经由用户明确批准并启动的 Grok 执行轮次会运行至完成或超时。
+
 ## 安装 Codex 插件
 
-克隆仓库后，在仓库根目录执行：
+普通用户不需要先克隆仓库，执行两条命令即可：
+
+```bash
+codex plugin marketplace add Mnufs/subscription-triad
+codex plugin add subscription-triad@subscription-triad
+```
+
+然后新建一个 Codex 任务，让新 Skill 和 MCP 工具进入上下文。插件不会替用户安装或登录厂商 CLI；这是仅有的账号侧准备。
+
+需要开发本插件时，才使用本地 marketplace：
 
 ```bash
 git clone https://github.com/Mnufs/subscription-triad.git
@@ -71,8 +90,6 @@ cd subscription-triad
 codex plugin marketplace add "$(pwd)"
 codex plugin add subscription-triad@subscription-triad
 ```
-
-然后新建一个 Codex 任务，让新 Skill 和 MCP 工具进入上下文。
 
 ## 使用
 
@@ -85,13 +102,13 @@ Use $subscription-triad to implement this feature:
 
 典型运行阶段：
 
-1. `doctor`：只检查 CLI、认证和 agmsg，不调用模型。
+1. `doctor`：生成并执行一次性只读检查，验证 CLI、订阅认证和本地传输，不调用模型。
 2. `create_run`：把需求、验收条件和真实仓库事实写入本地运行目录。
 3. `record_plan`：Codex 保存计划版本及 SHA-256。
-4. `review_plan`：Fable 返回 `PLAN_APPROVED` 或 `PLAN_REVISE`，最多五轮。
-5. `dispatch_grok`：后台启动 Grok Build 执行批准计划。
+4. `review_plan`：生成一次性 Fable provider 请求；Fable 返回 `PLAN_APPROVED` 或 `PLAN_REVISE`，最多五轮。
+5. `dispatch_grok`：生成一次性 Grok provider 请求，后台执行批准计划。
 6. `run_status`：读取状态、产物和 agmsg 消息。
-7. `continue_grok`：仅对批准范围内的问题复用原 Grok session 修正。
+7. `continue_grok`：用一次性、哈希绑定的修正包复用原 Grok session。
 8. `record_verification`：Codex 记录独立验收；只有 `pass` 才完成。
 
 运行产物默认保存在：
@@ -104,7 +121,7 @@ Use $subscription-triad to implement this feature:
 
 ## 手动 CLI
 
-插件内同时提供纯标准库 CLI，便于调试：
+插件内同时提供纯标准库 CLI，便于开发调试：
 
 ```bash
 TRIAD="plugins/subscription-triad/skills/subscription-triad/scripts/triad_cli.py"
@@ -118,6 +135,8 @@ python3 "$TRIAD" create \
 ```
 
 其他子命令可通过 `python3 "$TRIAD" --help` 查看。
+
+`triad_provider.py` 是 Codex 使用的受限宿主桥，只开放 `doctor`、`review`、`dispatch`、`continue` 四个 provider 动作；它不是通用命令执行器。
 
 ## 缓存策略与取舍
 
@@ -152,4 +171,4 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 
 ## English summary
 
-Subscription Triad is a Codex plugin for a fail-closed, subscription-only workflow: Codex plans, Claude Fable 5 reviews the exact plan, Grok Build executes after approval, agmsg carries local lifecycle messages, and Codex independently verifies the result. No API key is required or accepted by provider subprocesses.
+Subscription Triad is a zero-project-config Codex plugin for a fail-closed, subscription-only workflow: Codex plans, Claude Fable 5 reviews the exact plan, Grok Build executes after approval, agmsg or an embedded local transport carries lifecycle messages, and Codex independently verifies the result. Provider access uses exact single-command host approvals instead of persistent Codex network changes. No API key is required or accepted by provider subprocesses.

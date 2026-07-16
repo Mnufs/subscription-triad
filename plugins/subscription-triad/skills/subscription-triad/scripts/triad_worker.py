@@ -13,7 +13,7 @@ import triad_core
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one detached Subscription Triad Grok round.")
     parser.add_argument("--run", required=True)
-    parser.add_argument("--agmsg-root", required=True)
+    parser.add_argument("--agmsg-root")
     parser.add_argument("--mode", choices=("initial", "continue"), required=True)
     args = parser.parse_args()
     try:

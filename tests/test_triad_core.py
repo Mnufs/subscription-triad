@@ -137,6 +137,103 @@ class ProviderBoundaryTests(unittest.TestCase):
         self.assertEqual(["XAI_API_KEY"], report)
         self.assertNotIn("do-not-print", json.dumps(report))
 
+    def test_doctor_uses_embedded_transport_when_agmsg_is_absent(self):
+        with mock.patch.object(
+            triad_core,
+            "check_claude_subscription",
+            return_value={"available": True},
+        ):
+            with mock.patch.object(
+                triad_core,
+                "check_grok_subscription",
+                return_value={"available": True},
+            ):
+                with mock.patch.object(triad_core, "find_agmsg_root", return_value=None):
+                    report = triad_core.doctor()
+        self.assertTrue(report["ready"])
+        self.assertEqual("embedded", report["agmsg"]["mode"])
+        self.assertIsNone(report["agmsg"]["root"])
+
+    def test_embedded_transport_round_trip(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "project"
+            project.mkdir()
+            created = triad_core.create_run(str(project), "Task", "Acceptance", "Context")
+            state = created["state"]
+            transport_path = triad_core._embedded_transport_path(state)
+            self.assertEqual([], triad_core._read_agmsg_messages(None, state))
+            self.assertFalse(transport_path.exists())
+            message_id = triad_core._agmsg_send(None, state, "TRIAD_EXECUTION_DONE test")
+            messages = triad_core._read_agmsg_messages(None, state)
+        self.assertEqual("1", message_id)
+        self.assertEqual(1, len(messages))
+        self.assertEqual("TRIAD_EXECUTION_DONE test", messages[0]["body"])
+
+    def test_grok_readiness_prefers_current_model_and_accepts_legacy_alias(self):
+        inspection = subprocess.CompletedProcess(
+            ["grok", "inspect", "--json"],
+            0,
+            json.dumps({"loginPolicy": {"apiKeyAuthDisabled": True}}),
+            "",
+        )
+        cases = (
+            ("Default model: grok-4.5\n", "grok-4.5"),
+            ("Available models:\n  * grok-build\n", "grok-build"),
+        )
+        for model_output, expected in cases:
+            with self.subTest(expected=expected):
+                models = subprocess.CompletedProcess(["grok", "--oauth", "models"], 0, model_output, "")
+                with mock.patch.object(triad_core, "resolve_grok", return_value=Path("/fake/grok")):
+                    with mock.patch.object(triad_core, "_run", side_effect=(inspection, models)):
+                        result = triad_core.check_grok_subscription()
+                self.assertEqual(expected, result["model"])
+
+    def test_grok_readiness_rejects_unrecognized_models(self):
+        inspection = subprocess.CompletedProcess(
+            ["grok", "inspect", "--json"],
+            0,
+            json.dumps({"loginPolicy": {"apiKeyAuthDisabled": True}}),
+            "",
+        )
+        models = subprocess.CompletedProcess(
+            ["grok", "--oauth", "models"],
+            0,
+            "Available models:\n  * grok-composer-2.5-fast\n",
+            "",
+        )
+        with mock.patch.object(triad_core, "resolve_grok", return_value=Path("/fake/grok")):
+            with mock.patch.object(triad_core, "_run", side_effect=(inspection, models)):
+                with self.assertRaisesRegex(triad_core.TriadError, "supported model"):
+                    triad_core.check_grok_subscription()
+
+    def test_grok_readiness_rejects_cached_models_after_network_failure(self):
+        inspection = subprocess.CompletedProcess(
+            ["grok", "inspect", "--json"],
+            0,
+            json.dumps({"loginPolicy": {"apiKeyAuthDisabled": True}}),
+            "",
+        )
+        models = subprocess.CompletedProcess(
+            ["grok", "--oauth", "models"],
+            0,
+            "Default model: grok-4.5\n",
+            "Failed to fetch models: tcp connect error\n",
+        )
+        with mock.patch.object(triad_core, "resolve_grok", return_value=Path("/fake/grok")):
+            with mock.patch.object(triad_core, "_run", side_effect=(inspection, models)):
+                with self.assertRaisesRegex(triad_core.TriadError, "scoped host command"):
+                    triad_core.check_grok_subscription()
+
+    def test_grok_timeout_identifies_the_failed_stage(self):
+        with mock.patch.object(triad_core, "resolve_grok", return_value=Path("/fake/grok")):
+            with mock.patch.object(
+                triad_core,
+                "_run",
+                side_effect=triad_core.TriadError("Command timed out: grok"),
+            ):
+                with self.assertRaisesRegex(triad_core.TriadError, "configuration inspection"):
+                    triad_core.check_grok_subscription()
+
     def test_grok_commands_force_oauth_and_reuse_session(self):
         with tempfile.TemporaryDirectory() as temp:
             project = Path(temp) / "project"
@@ -153,11 +250,14 @@ class ProviderBoundaryTests(unittest.TestCase):
             state["active_followup"] = str(followup)
             with mock.patch.object(triad_core, "resolve_grok", return_value=Path("/fake/grok")):
                 initial = triad_core.build_grok_command(state, store, "initial")
+                state["grok_model"] = "grok-build"
                 continuation = triad_core.build_grok_command(state, store, "continue")
             self.assertIn("--oauth", initial)
+            self.assertEqual("grok-4.5", initial[initial.index("--model") + 1])
             self.assertIn("--session-id", initial)
             self.assertIn(state["grok_session_id"], initial)
             self.assertIn("--resume", continuation)
+            self.assertEqual("grok-build", continuation[continuation.index("--model") + 1])
             self.assertIn(state["grok_session_id"], continuation)
             self.assertNotIn("api.x.ai", " ".join(initial + continuation))
 

@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -32,13 +33,15 @@ import uuid
 SCHEMA_VERSION = 1
 FABLE_MODEL = "claude-fable-5"
 FABLE_HELPER_MODELS = frozenset({"claude-haiku-4-5-20251001"})
-GROK_MODEL = "grok-build"
+GROK_MODEL_PREFERENCES = ("grok-4.5", "grok-build")
+GROK_MODEL = GROK_MODEL_PREFERENCES[0]
 DEFAULT_EFFORT = "high"
 MAX_REVIEWS = 5
 MAX_TEXT_CHARS = 200_000
 CLAUDE_TIMEOUT_SECONDS = 600
 GROK_TIMEOUT_SECONDS = 7_200
 AUTH_TIMEOUT_SECONDS = 30
+EMBEDDED_TRANSPORT_DB = "messages.sqlite3"
 
 SENSITIVE_PROVIDER_ENV = frozenset(
     {
@@ -201,16 +204,26 @@ _GROK_AUTH_FAILURES = (
     "token expired",
 )
 
+_GROK_NETWORK_FAILURES = (
+    "failed to fetch models",
+    "settings fetch network error",
+    "settings fetch failed after",
+    "tcp connect error",
+)
+
 
 def check_grok_subscription(project_root: Optional[Path] = None) -> Dict[str, Any]:
     grok = resolve_grok()
     env = sanitized_provider_environment()
-    inspection = _run(
-        [str(grok), "inspect", "--json"],
-        timeout=AUTH_TIMEOUT_SECONDS,
-        cwd=project_root,
-        env=env,
-    )
+    try:
+        inspection = _run(
+            [str(grok), "inspect", "--json"],
+            timeout=AUTH_TIMEOUT_SECONDS,
+            cwd=project_root,
+            env=env,
+        )
+    except TriadError as exc:
+        raise TriadError("Grok Build configuration inspection failed: %s" % exc) from exc
     try:
         inspection_payload = json.loads(inspection.stdout)
     except json.JSONDecodeError as exc:
@@ -218,23 +231,38 @@ def check_grok_subscription(project_root: Optional[Path] = None) -> Dict[str, An
     login_policy = inspection_payload.get("loginPolicy") if isinstance(inspection_payload, dict) else None
     if not isinstance(login_policy, dict) or login_policy.get("apiKeyAuthDisabled") is not True:
         raise TriadError("Grok Build did not confirm that API-key authentication is disabled.")
-    result = _run(
-        [str(grok), "--oauth", "models"],
-        timeout=AUTH_TIMEOUT_SECONDS,
-        cwd=project_root,
-        env=env,
-    )
+    try:
+        result = _run(
+            [str(grok), "--oauth", "models"],
+            timeout=AUTH_TIMEOUT_SECONDS,
+            cwd=Path(__file__).resolve().parent,
+            env=env,
+        )
+    except TriadError as exc:
+        raise TriadError("Grok Build model availability check failed: %s" % exc) from exc
     combined = (result.stdout + "\n" + result.stderr).lower()
-    if result.returncode != 0 or any(marker in combined for marker in _GROK_AUTH_FAILURES):
+    if any(marker in combined for marker in _GROK_AUTH_FAILURES):
         raise TriadError("Grok Build OAuth is unavailable; run `grok login --oauth`.")
-    if GROK_MODEL not in combined:
-        raise TriadError("Grok Build did not advertise the required `%s` model." % GROK_MODEL)
+    if any(marker in combined for marker in _GROK_NETWORK_FAILURES):
+        raise TriadError(
+            "Grok Build could not refresh models from the scoped host command. Check the host "
+            "proxy or connectivity for `cli-chat-proxy.grok.com` and `auth.x.ai`; do not enable "
+            "persistent Codex network settings."
+        )
+    if result.returncode != 0:
+        raise TriadError("Grok Build OAuth model check failed.")
+    selected_model = next((model for model in GROK_MODEL_PREFERENCES if model in combined), None)
+    if selected_model is None:
+        raise TriadError(
+            "Grok Build did not advertise a supported model (%s)."
+            % ", ".join(GROK_MODEL_PREFERENCES)
+        )
     return {
         "available": True,
         "binary": str(grok),
         "auth_mode": "oauth-forced",
         "api_key_auth_disabled": True,
-        "model": GROK_MODEL,
+        "model": selected_model,
     }
 
 
@@ -283,11 +311,13 @@ def doctor(project_root: Optional[str] = None) -> Dict[str, Any]:
         report["grok"] = {"available": False, "error": str(exc)}
     agmsg = find_agmsg_root()
     report["agmsg"] = (
-        {"available": True, "root": str(agmsg)}
+        {"available": True, "mode": "external", "root": str(agmsg)}
         if agmsg
         else {
-            "available": False,
-            "error": "agmsg is not installed; install fujibee/agmsg or set AGMSG_SKILL_DIR.",
+            "available": True,
+            "mode": "embedded",
+            "root": None,
+            "detail": "Using the built-in local lifecycle transport; no separate agmsg install is required.",
         }
     )
     report["ready"] = all(report[name].get("available") is True for name in ("claude", "grok", "agmsg"))
@@ -616,6 +646,96 @@ def register_agmsg_roles(state: Dict[str, Any], agmsg_root: Path) -> None:
     _run_agmsg(agmsg_root, "join.sh", [team, state["executor_role"], "grok-build", project])
 
 
+def _embedded_transport_path(state: Dict[str, Any]) -> Path:
+    project = Path(state["project_root"]).expanduser().resolve()
+    path = project / ".subscription-triad" / "transport" / EMBEDDED_TRANSPORT_DB
+    _ensure_within(path, project)
+    return path
+
+
+@contextlib.contextmanager
+def _embedded_transport(state: Dict[str, Any]) -> Iterator[sqlite3.Connection]:
+    path = _embedded_transport_path(state)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    connection: Optional[sqlite3.Connection] = None
+    try:
+        connection = sqlite3.connect(str(path), timeout=5.0)
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lifecycle_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team TEXT NOT NULL,
+                from_agent TEXT NOT NULL,
+                to_agent TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        yield connection
+        connection.commit()
+    except sqlite3.Error as exc:
+        raise TriadError("Embedded lifecycle transport failed.") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _embedded_transport_send(state: Dict[str, Any], body: str) -> str:
+    with _embedded_transport(state) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO lifecycle_messages(team, from_agent, to_agent, body, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                state["team"],
+                state["executor_role"],
+                state["orchestrator_role"],
+                body,
+                utc_now(),
+            ),
+        )
+        return str(cursor.lastrowid)
+
+
+def _embedded_transport_messages(state: Dict[str, Any], limit: int = 20) -> List[Dict[str, Any]]:
+    path = _embedded_transport_path(state)
+    if not path.is_file():
+        return []
+    try:
+        connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5.0)
+        rows = connection.execute(
+            """
+            SELECT id, team, from_agent, to_agent, body, created_at
+            FROM lifecycle_messages
+            WHERE team = ? AND (from_agent = ? OR to_agent = ?)
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (state["team"], state["orchestrator_role"], state["orchestrator_role"], limit),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise TriadError("Embedded lifecycle transport could not be read.") from exc
+    finally:
+        with contextlib.suppress(UnboundLocalError):
+            connection.close()
+    return [
+        {
+            "type": "message_sent",
+            "id": str(row[0]),
+            "team": row[1],
+            "from": row[2],
+            "to": row[3],
+            "body": row[4],
+            "at": row[5],
+        }
+        for row in reversed(rows)
+    ]
+
+
 def build_handoff(store: RunStore, state: Dict[str, Any]) -> str:
     result_path = store.run_dir / "executor-response.json"
     return """# Subscription Triad execution handoff
@@ -656,10 +776,12 @@ Write your final structured response to stdout; Subscription Triad stores it at:
     )
 
 
-def _start_worker(store: RunStore, agmsg_root: Path, mode: str) -> int:
+def _start_worker(store: RunStore, agmsg_root: Optional[Path], mode: str) -> int:
     worker = Path(__file__).with_name("triad_worker.py")
     log_path = store.run_dir / ("worker-%s.log" % mode)
-    command = [sys.executable, str(worker), "--run", str(store.run_dir), "--agmsg-root", str(agmsg_root), "--mode", mode]
+    command = [sys.executable, str(worker), "--run", str(store.run_dir), "--mode", mode]
+    if agmsg_root is not None:
+        command.extend(["--agmsg-root", str(agmsg_root)])
     try:
         with log_path.open("ab") as log:
             process = subprocess.Popen(
@@ -684,11 +806,10 @@ def dispatch_grok(run_dir: str) -> Dict[str, Any]:
         raise TriadError("Grok dispatch requires an explicitly approved plan.")
     if state.get("approved_plan_sha256") != state.get("plan_sha256"):
         raise TriadError("The approved plan hash is stale; review the current plan again.")
-    check_grok_subscription(Path(state["project_root"]))
+    grok_status = check_grok_subscription(Path(state["project_root"]))
     agmsg_root = find_agmsg_root()
-    if not agmsg_root:
-        raise TriadError("agmsg is required for dispatch; install it or set AGMSG_SKILL_DIR.")
-    register_agmsg_roles(state, agmsg_root)
+    if agmsg_root:
+        register_agmsg_roles(state, agmsg_root)
     handoff = build_handoff(store, state)
     _atomic_write_text(store.run_dir / "handoff.md", handoff)
 
@@ -697,6 +818,7 @@ def dispatch_grok(run_dir: str) -> Dict[str, Any]:
             raise TriadError("Approval changed before dispatch.")
         current["state"] = "dispatched"
         current["execution_round"] = int(current.get("execution_round", 0)) + 1
+        current["grok_model"] = grok_status["model"]
         current["worker_pid"] = None
         store.event(current, "grok_dispatched", execution_round=current["execution_round"])
 
@@ -726,10 +848,10 @@ def continue_grok(run_dir: str, instructions: str) -> Dict[str, Any]:
     state = store.read()
     if state.get("state") not in {"executed", "verification_failed", "execution_failed"}:
         raise TriadError("Grok continuation is allowed only after an execution result or failed verification.")
-    check_grok_subscription(Path(state["project_root"]))
+    grok_status = check_grok_subscription(Path(state["project_root"]))
     agmsg_root = find_agmsg_root()
-    if not agmsg_root:
-        raise TriadError("agmsg is required for continuation.")
+    if agmsg_root:
+        register_agmsg_roles(state, agmsg_root)
     round_number = int(state.get("execution_round", 0)) + 1
     followup_path = store.run_dir / ("followup-v%d.md" % round_number)
     _atomic_write_text(
@@ -743,6 +865,7 @@ def continue_grok(run_dir: str, instructions: str) -> Dict[str, Any]:
             raise TriadError("Execution state changed before continuation.")
         current["state"] = "dispatched"
         current["execution_round"] = round_number
+        current["grok_model"] = grok_status["model"]
         current["active_followup"] = str(followup_path)
         current["worker_pid"] = None
         store.event(current, "grok_continued", execution_round=round_number)
@@ -767,13 +890,34 @@ def continue_grok(run_dir: str, instructions: str) -> Dict[str, Any]:
     return {"run_dir": str(store.run_dir), "worker_pid": pid, "state": final_state}
 
 
+def prepare_continuation_request(run_dir: str, instructions: str) -> Dict[str, str]:
+    """Write one hash-bound continuation payload for scoped host execution."""
+    store = RunStore(Path(run_dir))
+    state = store.read()
+    if state.get("state") not in {"executed", "verification_failed", "execution_failed"}:
+        raise TriadError("Grok continuation is allowed only after an execution result or failed verification.")
+    instruction_text = require_text("instructions", instructions)
+    request_dir = store.run_dir / ".provider-requests"
+    request_dir.mkdir(mode=0o700, exist_ok=True)
+    request_path = request_dir / ("continue-%s.md" % uuid.uuid4())
+    _atomic_write_text(request_path, instruction_text)
+    request_path.chmod(0o600)
+    return {
+        "path": str(request_path),
+        "sha256": sha256_text(instruction_text),
+    }
+
+
 def build_grok_command(state: Dict[str, Any], store: RunStore, mode: str) -> List[str]:
     grok = resolve_grok()
+    model = state.get("grok_model")
+    if model not in GROK_MODEL_PREFERENCES:
+        model = GROK_MODEL
     base = [
         str(grok),
         "--oauth",
         "--model",
-        GROK_MODEL,
+        model,
         "--reasoning-effort",
         DEFAULT_EFFORT,
         "--permission-mode",
@@ -794,7 +938,12 @@ def build_grok_command(state: Dict[str, Any], store: RunStore, mode: str) -> Lis
     raise TriadError("Unknown worker mode: %s" % mode)
 
 
-def _agmsg_send(agmsg_root: Path, state: Dict[str, Any], body: str) -> Optional[str]:
+def _agmsg_send(agmsg_root: Optional[Path], state: Dict[str, Any], body: str) -> Optional[str]:
+    if agmsg_root is None:
+        try:
+            return _embedded_transport_send(state, body)
+        except TriadError as exc:
+            return str(exc)
     try:
         result = _run_agmsg(
             agmsg_root,
@@ -808,14 +957,14 @@ def _agmsg_send(agmsg_root: Path, state: Dict[str, Any], body: str) -> Optional[
 
 def run_grok_worker(
     run_dir: str,
-    agmsg_root: str,
+    agmsg_root: Optional[str],
     mode: str,
     *,
     runner: Callable[..., subprocess.CompletedProcess] = _run,
 ) -> Dict[str, Any]:
     store = RunStore(Path(run_dir))
-    root = Path(agmsg_root).expanduser().resolve()
-    if not _valid_agmsg_root(root):
+    root = Path(agmsg_root).expanduser().resolve() if agmsg_root else None
+    if root is not None and not _valid_agmsg_root(root):
         raise TriadError("Worker received an invalid agmsg root.")
 
     def mark_executing(state: Dict[str, Any]) -> None:
@@ -887,7 +1036,12 @@ def run_grok_worker(
     }
 
 
-def _read_agmsg_messages(agmsg_root: Path, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _read_agmsg_messages(agmsg_root: Optional[Path], state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if agmsg_root is None:
+        try:
+            return _embedded_transport_messages(state)
+        except TriadError:
+            return []
     try:
         result = _run_agmsg(
             agmsg_root,
@@ -911,7 +1065,7 @@ def run_status(run_dir: str) -> Dict[str, Any]:
     store = RunStore(Path(run_dir))
     state = store.read()
     agmsg_root = find_agmsg_root()
-    messages = _read_agmsg_messages(agmsg_root, state) if agmsg_root else []
+    messages = _read_agmsg_messages(agmsg_root, state)
     artifacts = sorted(path.name for path in store.run_dir.iterdir() if path.is_file() and not path.name.startswith("."))
     return {"run_dir": str(store.run_dir), "state": state, "messages": messages, "artifacts": artifacts}
 

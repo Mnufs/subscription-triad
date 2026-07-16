@@ -13,9 +13,13 @@ class PluginStructureTests(unittest.TestCase):
     def test_manifest_and_companion_paths(self):
         manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual("subscription-triad", manifest["name"])
+        self.assertEqual("0.2.0", manifest["version"])
         self.assertEqual("./skills/", manifest["skills"])
         self.assertEqual("./.mcp.json", manifest["mcpServers"])
         self.assertTrue((PLUGIN / "skills" / "subscription-triad" / "SKILL.md").is_file())
+        self.assertTrue(
+            (PLUGIN / "skills" / "subscription-triad" / "scripts" / "triad_provider.py").is_file()
+        )
         self.assertTrue((PLUGIN / ".mcp.json").is_file())
         self.assertNotIn("[TODO:", json.dumps(manifest))
 
