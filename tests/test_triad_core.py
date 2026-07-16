@@ -124,6 +124,8 @@ class ProviderBoundaryTests(unittest.TestCase):
             "ANTHROPIC_API_KEY": "secret-a",
             "XAI_API_KEY": "secret-x",
             "XAI_API_BASE_URL": "https://example.invalid",
+            "TRIAD_PROVIDER_SESSION_LEASE": "/tmp/lease",
+            "TRIAD_PROVIDER_SESSION_TOKEN": "opaque-token",
         }
         clean = triad_core.sanitized_provider_environment(source)
         self.assertEqual("/bin", clean["PATH"])
@@ -131,6 +133,8 @@ class ProviderBoundaryTests(unittest.TestCase):
         self.assertNotIn("XAI_API_KEY", clean)
         self.assertNotIn("XAI_API_BASE_URL", clean)
         self.assertEqual("1", clean["GROK_DISABLE_API_KEY_AUTH"])
+        self.assertEqual("/tmp/lease", clean["TRIAD_PROVIDER_SESSION_LEASE"])
+        self.assertEqual("opaque-token", clean["TRIAD_PROVIDER_SESSION_TOKEN"])
 
     def test_parent_environment_report_lists_names_not_values(self):
         report = triad_core.present_api_environment({"XAI_API_KEY": "do-not-print", "PATH": "/bin"})
@@ -221,7 +225,7 @@ class ProviderBoundaryTests(unittest.TestCase):
         )
         with mock.patch.object(triad_core, "resolve_grok", return_value=Path("/fake/grok")):
             with mock.patch.object(triad_core, "_run", side_effect=(inspection, models)):
-                with self.assertRaisesRegex(triad_core.TriadError, "scoped host command"):
+                with self.assertRaisesRegex(triad_core.TriadError, "approved provider session"):
                     triad_core.check_grok_subscription()
 
     def test_grok_timeout_identifies_the_failed_stage(self):
@@ -253,10 +257,14 @@ class ProviderBoundaryTests(unittest.TestCase):
                 state["grok_model"] = "grok-build"
                 continuation = triad_core.build_grok_command(state, store, "continue")
             self.assertIn("--oauth", initial)
+            self.assertEqual(str(project.resolve()), initial[initial.index("--cwd") + 1])
+            self.assertEqual("workspace", initial[initial.index("--sandbox") + 1])
             self.assertEqual("grok-4.5", initial[initial.index("--model") + 1])
             self.assertIn("--session-id", initial)
             self.assertIn(state["grok_session_id"], initial)
             self.assertIn("--resume", continuation)
+            self.assertEqual(str(project.resolve()), continuation[continuation.index("--cwd") + 1])
+            self.assertEqual("workspace", continuation[continuation.index("--sandbox") + 1])
             self.assertEqual("grok-build", continuation[continuation.index("--model") + 1])
             self.assertIn(state["grok_session_id"], continuation)
             self.assertNotIn("api.x.ai", " ".join(initial + continuation))

@@ -1,7 +1,7 @@
 {
   "name": "subscription-triad",
-  "version": "0.2.0",
-  "description": "Plan with Codex, review with Fable, and execute with Grok through scoped subscription CLI calls without project network configuration.",
+  "version": "0.3.0",
+  "description": "Plan with Codex, review with Fable, and execute with Grok through one temporary feature authorization without project network configuration.",
   "author": {
     "name": "Mnufs",
     "url": "https://github.com/Mnufs"
@@ -21,14 +21,15 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Subscription Triad",
-    "shortDescription": "Zero-config planning and execution via subscription CLIs",
-    "longDescription": "A zero-project-config, fail-closed Codex workflow that binds Fable approval to an exact plan hash, uses single-command host approvals for subscription CLIs, dispatches Grok Build through OAuth, and requires Codex verification.",
+    "shortDescription": "One-authorization planning and execution via subscription CLIs",
+    "longDescription": "A zero-project-config, fail-closed Codex workflow that uses one temporary provider authorization per feature, binds Fable approval to an exact plan hash, dispatches Grok Build through OAuth, and requires Codex verification.",
     "developerName": "Mnufs",
     "category": "Productivity",
     "websiteURL": "https://github.com/Mnufs/subscription-triad",
     "brandColor": "#4F46E5",
     "capabilities": [
       "Subscription-only provider routing",
+      "One temporary authorization per feature",
       "No persistent network configuration",
       "Independent plan review",
       "Plan-hash approval gate",

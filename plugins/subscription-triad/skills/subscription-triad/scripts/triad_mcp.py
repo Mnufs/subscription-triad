@@ -7,23 +7,62 @@ import json
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional, Set
+import uuid
 
 import triad_core
+import triad_session
 
 
 STRING = {"type": "string", "maxLength": triad_core.MAX_TEXT_CHARS}
 PROVIDER_BRIDGE = Path(__file__).with_name("triad_provider.py").resolve()
 
 
-def _scoped_provider_request(action: str, argv: List[str], cwd: Path, reason: str) -> Dict[str, Any]:
+def _provider_session_request(
+    store: triad_core.RunStore,
+    state: Dict[str, Any],
+    project: Path,
+) -> Dict[str, Any]:
     return {
-        "action_required": "scoped_host_execution",
-        "provider_action": action,
-        "argv": argv,
-        "cwd": str(cwd),
-        "approval_reason": reason,
-        "approval_scope": "single_command",
+        "action_required": "scoped_host_session",
+        "provider_action": "session",
+        "argv": [sys.executable, str(PROVIDER_BRIDGE), "session", "--run", str(store.run_dir)],
+        "cwd": str(project),
+        "approval_reason": (
+            "Allow one temporary Subscription Triad feature session for run %s in this target "
+            "repository. The process can only check official subscription CLIs, review this run's "
+            "plans with Fable, and dispatch or resume its approved Grok execution."
+            % state["run_id"]
+        ),
+        "approval_scope": "single_feature_session",
         "allow_persistent_rule": False,
+        "changes_codex_network_defaults": False,
+        "config_files_to_modify": [],
+        "retain_process_session": True,
+        "stdin_protocol": "utf-8-json-lines",
+        "expected_ready_event": "session_ready",
+        "session_idle_timeout_seconds": triad_session.SESSION_IDLE_TIMEOUT_SECONDS,
+        "session_hard_timeout_seconds": triad_session.SESSION_HARD_TIMEOUT_SECONDS,
+        "run_dir": str(store.run_dir),
+    }
+
+
+def _provider_session_input(
+    action: str,
+    run_dir: Path,
+    values: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    payload: Dict[str, str] = {"action": action, "request_id": request_id}
+    if values:
+        payload.update(values)
+    return {
+        "action_required": "provider_session_input",
+        "provider_action": action,
+        "run_dir": str(run_dir),
+        "request_id": request_id,
+        "stdin": json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+        "stdin_protocol": "utf-8-json-lines",
+        "requires_new_host_approval": False,
         "changes_codex_network_defaults": False,
         "config_files_to_modify": [],
     }
@@ -49,11 +88,12 @@ def tool_definitions() -> List[Dict[str, Any]]:
     return [
         {
             "name": "doctor",
-            "title": "Prepare a scoped provider readiness check",
-            "description": "Prepare one exact host command that checks official Claude and Grok readiness without changing Codex network defaults or calling a model.",
+            "title": "Check providers in the approved feature session",
+            "description": "Prepare one JSON line that checks official Claude and Grok readiness inside the already-approved run session without a new host approval or model call.",
             "inputSchema": {
                 "type": "object",
-                "properties": {"project_root": {**STRING, "description": "Optional project root for Grok discovery."}},
+                "properties": {"run_dir": {**STRING, "description": "Run directory returned by create_run."}},
+                "required": ["run_dir"],
                 "additionalProperties": False,
             },
             "annotations": _annotations(read_only=True),
@@ -91,9 +131,21 @@ def tool_definitions() -> List[Dict[str, Any]]:
             "annotations": _annotations(read_only=False),
         },
         {
+            "name": "start_provider_session",
+            "title": "Start one bounded provider session for this feature",
+            "description": "Prepare the only host-approved command for this feature. Keep its process session open and send later provider inputs through the same stdin channel.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"run_dir": {**STRING, "description": "Planned run directory."}},
+                "required": ["run_dir"],
+                "additionalProperties": False,
+            },
+            "annotations": _annotations(read_only=True),
+        },
+        {
             "name": "review_plan",
-            "title": "Prepare a scoped Claude Fable 5 review",
-            "description": "Prepare one exact host command for a no-tools Fable review; the command binds approval to the exact plan hash.",
+            "title": "Review the plan in the approved feature session",
+            "description": "Prepare one JSON line for a no-tools Fable review in the existing provider session; Fable approval remains bound to the exact plan hash.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -111,8 +163,8 @@ def tool_definitions() -> List[Dict[str, Any]]:
         },
         {
             "name": "dispatch_grok",
-            "title": "Prepare a scoped Grok Build dispatch",
-            "description": "Prepare one exact host command that starts the official Grok Build OAuth worker after exact-hash approval.",
+            "title": "Dispatch Grok in the approved feature session",
+            "description": "Prepare one JSON line that starts the official Grok Build OAuth worker from the existing provider session after exact-hash approval.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"run_dir": {**STRING, "description": "Approved run directory."}},
@@ -123,8 +175,8 @@ def tool_definitions() -> List[Dict[str, Any]]:
         },
         {
             "name": "continue_grok",
-            "title": "Prepare a scoped Grok Build continuation",
-            "description": "Store a one-time hash-bound correction packet and prepare the exact host command that resumes the feature session.",
+            "title": "Continue Grok in the approved feature session",
+            "description": "Store a one-time hash-bound correction packet and prepare one JSON line that resumes the feature's Grok session without another host approval.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -135,6 +187,18 @@ def tool_definitions() -> List[Dict[str, Any]]:
                 "additionalProperties": False,
             },
             "annotations": _annotations(read_only=False),
+        },
+        {
+            "name": "close_provider_session",
+            "title": "Close the feature provider session",
+            "description": "Prepare the final JSON line that closes the temporary provider process and removes its private lease.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"run_dir": {**STRING, "description": "Run directory."}},
+                "required": ["run_dir"],
+                "additionalProperties": False,
+            },
+            "annotations": _annotations(read_only=True),
         },
         {
             "name": "run_status",
@@ -185,17 +249,9 @@ def _arguments(value: Any, allowed: Set[str]) -> Dict[str, Any]:
 
 def call_tool(name: str, arguments: Any) -> Dict[str, Any]:
     if name == "doctor":
-        args = _arguments(arguments, {"project_root"})
-        project_value = args.get("project_root")
-        project = Path(project_value).expanduser().resolve() if project_value else Path.cwd().resolve()
-        if not project.is_dir():
-            raise triad_core.TriadError("Project root must be an existing directory.")
-        return _scoped_provider_request(
-            "doctor",
-            [sys.executable, str(PROVIDER_BRIDGE), "doctor", "--project", str(project)],
-            project,
-            "Allow this one Subscription Triad readiness check to contact the official Claude and Grok subscription services.",
-        )
+        args = _arguments(arguments, {"run_dir"})
+        store, _state, _project = _run_context(args.get("run_dir"))
+        return _provider_session_input("doctor", store.run_dir)
     if name == "create_run":
         args = _arguments(arguments, {"project_root", "task", "acceptance_criteria", "context"})
         return triad_core.create_run(
@@ -207,47 +263,44 @@ def call_tool(name: str, arguments: Any) -> Dict[str, Any]:
     if name == "record_plan":
         args = _arguments(arguments, {"run_dir", "plan"})
         return triad_core.record_plan(args.get("run_dir"), args.get("plan"))
+    if name == "start_provider_session":
+        args = _arguments(arguments, {"run_dir"})
+        store, state, project = _run_context(args.get("run_dir"))
+        state = triad_session.recover_orphaned_worker(store, state)
+        if state.get("state") not in {"planned", "approved", "executed", "verification_failed", "execution_failed"}:
+            raise triad_core.TriadError("Record a canonical plan before starting the provider session.")
+        return _provider_session_request(store, state, project)
     if name == "review_plan":
         args = _arguments(arguments, {"run_dir", "effort"})
         effort = args.get("effort", "high")
         if effort not in {"low", "medium", "high", "xhigh", "max"}:
             raise triad_core.TriadError("Unsupported Fable effort: %s" % effort)
-        store, _state, project = _run_context(args.get("run_dir"))
-        return _scoped_provider_request(
+        store, _state, _project = _run_context(args.get("run_dir"))
+        return _provider_session_input(
             "review",
-            [sys.executable, str(PROVIDER_BRIDGE), "review", "--run", str(store.run_dir), "--effort", effort],
-            project,
-            "Allow this one no-tools plan review through the official Claude subscription CLI.",
+            store.run_dir,
+            {"effort": effort},
         )
     if name == "dispatch_grok":
         args = _arguments(arguments, {"run_dir"})
-        store, _state, project = _run_context(args.get("run_dir"))
-        return _scoped_provider_request(
-            "dispatch",
-            [sys.executable, str(PROVIDER_BRIDGE), "dispatch", "--run", str(store.run_dir)],
-            project,
-            "Allow this approved plan to run once through the official Grok OAuth CLI and modify only the requested project scope.",
-        )
+        store, _state, _project = _run_context(args.get("run_dir"))
+        return _provider_session_input("dispatch", store.run_dir)
     if name == "continue_grok":
         args = _arguments(arguments, {"run_dir", "instructions"})
-        store, _state, project = _run_context(args.get("run_dir"))
+        store, _state, _project = _run_context(args.get("run_dir"))
         request = triad_core.prepare_continuation_request(str(store.run_dir), args.get("instructions"))
-        return _scoped_provider_request(
+        return _provider_session_input(
             "continue",
-            [
-                sys.executable,
-                str(PROVIDER_BRIDGE),
-                "continue",
-                "--run",
-                str(store.run_dir),
-                "--instructions-file",
-                request["path"],
-                "--instructions-sha256",
-                request["sha256"],
-            ],
-            project,
-            "Allow this one hash-bound correction round through the existing Grok OAuth session.",
+            store.run_dir,
+            {
+                "instructions_file": request["path"],
+                "instructions_sha256": request["sha256"],
+            },
         )
+    if name == "close_provider_session":
+        args = _arguments(arguments, {"run_dir"})
+        store, _state, _project = _run_context(args.get("run_dir"))
+        return _provider_session_input("close", store.run_dir)
     if name == "run_status":
         args = _arguments(arguments, {"run_dir"})
         return triad_core.run_status(args.get("run_dir"))
@@ -266,7 +319,7 @@ def handle_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         result: Dict[str, Any] = {
             "protocolVersion": "2025-06-18",
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "subscription-triad", "version": "0.2.0"},
+            "serverInfo": {"name": "subscription-triad", "version": "0.3.0"},
         }
     elif method == "ping":
         result = {}

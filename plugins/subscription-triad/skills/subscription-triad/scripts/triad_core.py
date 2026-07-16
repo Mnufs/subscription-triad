@@ -245,7 +245,7 @@ def check_grok_subscription(project_root: Optional[Path] = None) -> Dict[str, An
         raise TriadError("Grok Build OAuth is unavailable; run `grok login --oauth`.")
     if any(marker in combined for marker in _GROK_NETWORK_FAILURES):
         raise TriadError(
-            "Grok Build could not refresh models from the scoped host command. Check the host "
+            "Grok Build could not refresh models from the approved provider session. Check the host "
             "proxy or connectivity for `cli-chat-proxy.grok.com` and `auth.x.ai`; do not enable "
             "persistent Codex network settings."
         )
@@ -891,7 +891,7 @@ def continue_grok(run_dir: str, instructions: str) -> Dict[str, Any]:
 
 
 def prepare_continuation_request(run_dir: str, instructions: str) -> Dict[str, str]:
-    """Write one hash-bound continuation payload for scoped host execution."""
+    """Write one hash-bound continuation payload for the active provider session."""
     store = RunStore(Path(run_dir))
     state = store.read()
     if state.get("state") not in {"executed", "verification_failed", "execution_failed"}:
@@ -916,6 +916,10 @@ def build_grok_command(state: Dict[str, Any], store: RunStore, mode: str) -> Lis
     base = [
         str(grok),
         "--oauth",
+        "--cwd",
+        state["project_root"],
+        "--sandbox",
+        "workspace",
         "--model",
         model,
         "--reasoning-effort",
